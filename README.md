@@ -1,6 +1,6 @@
 # FairShare Ledger
 
-[cloudflarebutton]
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sajidifti/FairShare)
 
 A minimalist, visually stunning web application to simplify cost-sharing for flatmates. It calculates the refund amount for a leaving member based on a linear depreciation model for shared appliances.
 
@@ -80,4 +80,4 @@ To deploy your application, simply run the build command followed by the deploy 
 
 Alternatively, you can connect your GitHub repository to Cloudflare Pages for continuous deployment.
 
-[cloudflarebutton]
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sajidifti/FairShare)
