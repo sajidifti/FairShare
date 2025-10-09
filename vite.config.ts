@@ -2,6 +2,7 @@ import { defineConfig, loadEnv } from "vite";
 import path from "path";
 import react from "@vitejs/plugin-react";
 import { exec } from "node:child_process";
+import fs from "node:fs";
 import pino from "pino";
 import { cloudflare } from "@cloudflare/vite-plugin";
 
@@ -68,17 +69,18 @@ function watchDependenciesPlugin() {
             )}. Clearing caches...`
           );
 
-          // Run the cache-clearing command
-          exec(
-            "rm -f .eslintcache tsconfig.tsbuildinfo",
-            (err, stdout, stderr) => {
-              if (err) {
-                console.error("Failed to clear caches:", stderr);
-                return;
-              }
-              console.log("✅ Caches cleared successfully.\n");
+          // Cross-platform cache clearing
+          try {
+            if (fs.existsSync(".eslintcache")) {
+              fs.rmSync(".eslintcache", { force: true });
             }
-          );
+            if (fs.existsSync("tsconfig.tsbuildinfo")) {
+              fs.rmSync("tsconfig.tsbuildinfo", { force: true });
+            }
+            console.log("✅ Caches cleared successfully.\n");
+          } catch (e) {
+            console.error("Failed to clear caches:", e);
+          }
         }
       });
     },
@@ -88,6 +90,8 @@ function watchDependenciesPlugin() {
 // https://vite.dev/config/
 export default ({ mode }: { mode: string }) => {
   const env = loadEnv(mode, process.cwd());
+  const serverPort = Number(env.PORT ?? process.env.PORT ?? 3000);
+  const previewPort = Number(env.PREVIEW_PORT ?? process.env.PREVIEW_PORT ?? 4173);
   return defineConfig({
     plugins: [react(), cloudflare(), watchDependenciesPlugin()],
     build: {
@@ -105,7 +109,13 @@ export default ({ mode }: { mode: string }) => {
       devSourcemap: true,
     },
     server: {
+      host: "0.0.0.0",
+      port: serverPort,
       allowedHosts: true,
+    },
+    preview: {
+      host: "0.0.0.0",
+      port: previewPort,
     },
     resolve: {
       alias: {
