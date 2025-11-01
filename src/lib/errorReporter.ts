@@ -265,11 +265,12 @@ class GlobalErrorDeduplication {
     const now = Date.now();
     if (now - this.lastCleanup > this.cleanupInterval) {
       const cutoff = now - 300000; // 5 minutes
-      for (const [signature, data] of this.reportedErrors.entries()) {
+      // Use forEach to avoid downlevelIteration/map iterator issues with older TS targets
+      this.reportedErrors.forEach((data, signature) => {
         if (data.timestamp < cutoff) {
           this.reportedErrors.delete(signature);
         }
-      }
+      });
       this.lastCleanup = now;
     }
   }

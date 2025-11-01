@@ -71,22 +71,30 @@ export const useAppStore = create<AppState & { actions: AppActions }>()(
         resetStore: () => set(initialState),
       },
     })),
-    {
-      name: 'fairshare-ledger-storage',
-      storage: createJSONStorage(() => localStorage, {
-        reviver: (key, value) => {
-          if (['purchaseDate', 'leaveDate', 'joiningDate'].includes(key)) {
-            if (value && typeof value === 'string') {
-              const date = new Date(value);
-              return isNaN(date.getTime()) ? null : date;
+    // Persist options: only enable storage when running in the browser
+    (() => {
+      const baseOptions: any = {
+        name: 'fairshare-ledger-storage',
+        // This is the key change: only persist the state, not the actions.
+        partialize: (state: AppState) => ({ members: state.members, items: state.items }),
+      };
+
+      if (typeof window !== 'undefined') {
+        baseOptions.storage = createJSONStorage(() => localStorage, {
+          reviver: (key: string, value: unknown) => {
+            if (['purchaseDate', 'leaveDate', 'joiningDate'].includes(key)) {
+              if (value && typeof value === 'string') {
+                const date = new Date(value);
+                return isNaN(date.getTime()) ? null : date;
+              }
             }
-          }
-          return value;
-        },
-      }),
-      // This is the key change: only persist the state, not the actions.
-      partialize: (state) => ({ members: state.members, items: state.items }),
-    }
+            return value;
+          },
+        });
+      }
+
+      return baseOptions;
+    })()
   )
 );
 // --- Selectors ---
@@ -117,9 +125,10 @@ export const calculateRefundForItem = (leavingMember: Member, item: Item, allMem
 };
 export const calculateTotalRefundForMember = (member: Member, items: Item[], allMembers: Member[]): number => {
   if (!member.leaveDate) return 0;
+  const leaveDate = member.leaveDate;
   return items.reduce((total, item) => {
     // Only calculate for items purchased before the member leaves
-    if (item.purchaseDate < member.leaveDate) {
+    if (item.purchaseDate < leaveDate) {
       return total + calculateRefundForItem(member, item, allMembers);
     }
     return total;

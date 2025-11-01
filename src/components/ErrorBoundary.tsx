@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component<Props, State> {
     errorReporter.report({
       message: error.message,
       stack: error.stack || "",
-      componentStack: errorInfo.componentStack,
+      componentStack: errorInfo.componentStack ?? undefined,
       errorBoundary: true,
       errorBoundaryProps: {
         componentName: this.constructor.name,

@@ -84,7 +84,7 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
   onSuccess: () => void;
 }) {
   const form = useForm<ItemFormValues>({
-    resolver: zodResolver(itemSchema),
+    resolver: zodResolver(itemSchema) as any,
     defaultValues: existingItem ? { 
       name: existingItem.name,
       price: existingItem.price,
@@ -119,7 +119,7 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
         }),
       });
 
-      const data = await response.json();
+  const data = (await response.json()) as { error?: string } | any;
 
       if (response.ok) {
         toast.success(`Item "${values.name}" ${existingItem ? 'updated' : 'added'}.`);
@@ -194,15 +194,16 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
 function MemberCard({ member, items, allMembers }: { member: Member; items: Item[]; allMembers: Member[] }) {
   const totalRefund = calculateTotalRefundForMember(member, items, allMembers);
 
-  const handleUpdateLeaveDate = async (leaveDate: Date | null) => {
+  const handleUpdateLeaveDate = async (leaveDate: Date | undefined) => {
     try {
+      const dateToSend = leaveDate ? leaveDate.toISOString().split('T')[0] : null;
       const response = await fetch(`/api/groups/${member.id}/members`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          leaveDate: leaveDate ? leaveDate.toISOString().split('T')[0] : null,
+          leaveDate: dateToSend,
         }),
       });
 
@@ -243,6 +244,7 @@ function MemberCard({ member, items, allMembers }: { member: Member; items: Item
               <PopoverContent className="w-auto p-0">
                 <Calendar 
                   mode="single" 
+                  required={false}
                   selected={member.leave_date ? new Date(member.leave_date) : undefined} 
                   onSelect={handleUpdateLeaveDate} 
                   disabled={(date) => date < new Date(member.joined_at)} 
@@ -305,10 +307,10 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     try {
       const response = await fetch(`/api/groups/${groupId}`);
       if (response.ok) {
-        const data = await response.json();
+        const data = (await response.json()) as { group?: any } | any;
         setGroupData(data.group);
-        setMembers(data.group.members || []);
-        setItems(data.group.items || []);
+        setMembers(data.group?.members || []);
+        setItems(data.group?.items || []);
       } else {
         toast.error('Failed to load group data');
       }
@@ -590,3 +592,5 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     </div>
   );
 }
+
+export default GroupHomePage;

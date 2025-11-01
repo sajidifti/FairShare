@@ -35,7 +35,7 @@ type ItemFormValues = z.infer<typeof itemSchema>;
 function AddMemberForm({ setOpen }: { setOpen: (open: boolean) => void }) {
   const { addMember } = useAppActions();
   const form = useForm<MemberFormValues>({
-    resolver: zodResolver(memberSchema),
+    resolver: zodResolver(memberSchema) as any,
     defaultValues: { name: '', joiningDate: new Date() },
   });
   function onSubmit(values: MemberFormValues) {
@@ -83,7 +83,7 @@ function AddMemberForm({ setOpen }: { setOpen: (open: boolean) => void }) {
 function ItemForm({ setOpen, existingItem }: { setOpen: (open: boolean) => void; existingItem?: Item }) {
   const { addItem, editItem } = useAppActions();
   const form = useForm<ItemFormValues>({
-    resolver: zodResolver(itemSchema),
+    resolver: zodResolver(itemSchema) as any,
     defaultValues: existingItem ? { ...existingItem } : {
       name: '',
       price: 0,
@@ -356,3 +356,5 @@ export function HomePage() {
     </div>
   );
 }
+
+export default HomePage;

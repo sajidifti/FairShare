@@ -7,6 +7,8 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint --cache -f json --quiet .",
+  "init-db": "node scripts/init-db.cjs",
+  "reset-db": "node scripts/reset-db.cjs",
     "start": "next start",
     "deploy": "bun run build && wrangler deploy",
     "cf-typegen": "wrangler types"

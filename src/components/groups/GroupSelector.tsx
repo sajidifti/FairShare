@@ -67,7 +67,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
     try {
       const response = await fetch('/api/groups');
       if (response.ok) {
-        const data = await response.json();
+        const data = (await response.json()) as { groups: Group[] };
         setGroups(data.groups);
       }
     } catch (error) {
@@ -88,7 +88,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
         body: JSON.stringify(values),
       });
 
-      const data = await response.json();
+  const data = (await response.json()) as { success?: boolean; error?: string } | any;
 
       if (response.ok) {
         toast.success('Group created successfully!');
@@ -113,7 +113,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
         body: JSON.stringify(values),
       });
 
-      const data = await response.json();
+  const data = (await response.json()) as { success?: boolean; error?: string } | any;
 
       if (response.ok) {
         toast.success('Successfully joined the group!');
