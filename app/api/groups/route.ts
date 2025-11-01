@@ -6,6 +6,8 @@ import { dbHelpers } from '@/lib/database';
 const createGroupSchema = z.object({
   name: z.string().min(1, 'Group name is required'),
   description: z.string().optional(),
+  // Optional owner join date for when the creator should be considered to have joined
+  joinedAt: z.string().optional(),
 });
 
 export async function GET() {
@@ -27,9 +29,19 @@ export async function POST(request: NextRequest) {
   try {
     const session = await requireAuth();
     const body = await request.json();
-    const { name, description } = createGroupSchema.parse(body);
+    const { name, description, joinedAt } = createGroupSchema.parse(body);
 
-    const result = dbHelpers.createGroup(name, description || null, session.userId as number);
+    // Normalize joinedAt to YYYY-MM-DD if provided
+    let normalizedJoinedAt: string | undefined = undefined;
+    if (joinedAt) {
+      const d = new Date(joinedAt);
+      if (isNaN(d.getTime())) {
+        return NextResponse.json({ error: 'Invalid joinedAt date' }, { status: 400 });
+      }
+      normalizedJoinedAt = d.toISOString().split('T')[0];
+    }
+
+    const result = dbHelpers.createGroup(name, description || null, session.userId as number, normalizedJoinedAt);
 
     return NextResponse.json({
       success: true,

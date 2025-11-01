@@ -2,7 +2,9 @@ import Database from 'better-sqlite3';
 import { join } from 'path';
 
 const dbPath = join(process.cwd(), 'fairshare.db');
-const db = new Database(dbPath);
+// Use a loose type for the exported DB instance so TypeScript doesn't try to name
+// the external BetterSqlite3.Database type in declaration output (avoids TS4023).
+const db: any = new Database(dbPath);
 
 // Enable foreign keys
 db.pragma('foreign_keys = ON');
@@ -90,15 +92,20 @@ export const dbHelpers = {
   },
 
   // Group operations
-  createGroup: (name: string, description: string | null, ownerId: number) => {
+  createGroup: (name: string, description: string | null, ownerId: number, ownerJoinedAt?: string) => {
     const inviteCode = generateInviteCode();
     const stmt = db.prepare('INSERT INTO groups (name, description, invite_code, owner_id) VALUES (?, ?, ?, ?)');
     const result = stmt.run(name, description, inviteCode, ownerId);
-    
-    // Add owner as group member
-    const memberStmt = db.prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)');
-    memberStmt.run(result.lastInsertRowid, ownerId, 'owner');
-    
+
+    // Add owner as group member; if ownerJoinedAt is provided, set it explicitly
+    if (ownerJoinedAt) {
+      const memberStmt = db.prepare('INSERT INTO group_members (group_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)');
+      memberStmt.run(result.lastInsertRowid, ownerId, 'owner', ownerJoinedAt);
+    } else {
+      const memberStmt = db.prepare('INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)');
+      memberStmt.run(result.lastInsertRowid, ownerId, 'owner');
+    }
+
     return { ...result, inviteCode };
   },
 
@@ -123,7 +130,11 @@ export const dbHelpers = {
     return stmt.all(userId) as any[];
   },
 
-  joinGroup: (groupId: number, userId: number) => {
+  joinGroup: (groupId: number, userId: number, joinedAt?: string) => {
+    if (joinedAt) {
+      const stmt = db.prepare('INSERT INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)');
+      return stmt.run(groupId, userId, joinedAt);
+    }
     const stmt = db.prepare('INSERT INTO group_members (group_id, user_id) VALUES (?, ?)');
     return stmt.run(groupId, userId);
   },

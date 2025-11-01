@@ -15,10 +15,14 @@ import { toast } from 'sonner';
 const createGroupSchema = z.object({
   name: z.string().min(1, 'Group name is required'),
   description: z.string().optional(),
+  // Optional join date for the group creator
+  joinedAt: z.string().optional(),
 });
 
 const joinGroupSchema = z.object({
   inviteCode: z.string().min(1, 'Invite code is required'),
+  // Optional join date (YYYY-MM-DD)
+  joinedAt: z.string().optional(),
 });
 
 type CreateGroupFormValues = z.infer<typeof createGroupSchema>;
@@ -49,6 +53,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
     defaultValues: {
       name: '',
       description: '',
+      joinedAt: undefined,
     },
   });
 
@@ -56,6 +61,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
     resolver: zodResolver(joinGroupSchema),
     defaultValues: {
       inviteCode: '',
+      joinedAt: undefined,
     },
   });
 
@@ -85,7 +91,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(values),
+        body: JSON.stringify({ name: values.name, description: values.description || undefined, joinedAt: values.joinedAt || undefined }),
       });
 
   const data = (await response.json()) as { success?: boolean; error?: string } | any;
@@ -110,7 +116,7 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(values),
+        body: JSON.stringify({ inviteCode: values.inviteCode, joinedAt: values.joinedAt || undefined }),
       });
 
   const data = (await response.json()) as { success?: boolean; error?: string } | any;
@@ -213,6 +219,19 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
                     </FormItem>
                   )}
                 />
+                <FormField
+                  control={createForm.control}
+                  name="joinedAt"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Joining Date (optional)</FormLabel>
+                      <FormControl>
+                        <Input type="date" placeholder="YYYY-MM-DD" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
                 <Button type="submit" className="w-full">
                   Create Group
                 </Button>
@@ -249,6 +268,19 @@ export function GroupSelector({ onGroupSelect }: GroupSelectorProps) {
                       <FormLabel>Invite Code</FormLabel>
                       <FormControl>
                         <Input placeholder="Enter invite code" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={joinForm.control}
+                  name="joinedAt"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Joining Date (optional)</FormLabel>
+                      <FormControl>
+                        <Input type="date" placeholder="YYYY-MM-DD" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
