@@ -29,7 +29,7 @@ const itemSchema = z.object({
   name: z.string().min(2, { message: "Item name must be at least 2 characters." }),
   price: z.coerce.number().positive({ message: "Price must be a positive number." }),
   purchaseDate: z.date({ message: "A valid purchase date is required." }),
-  depreciationYears: z.coerce.number().int().min(1, { message: "Must be at least 1 year." }),
+  depreciationDays: z.coerce.number().int().min(1, { message: "Must be at least 1 day." }),
 });
 type ItemFormValues = z.infer<typeof itemSchema>;
 function AddMemberForm({ setOpen }: { setOpen: (open: boolean) => void }) {
@@ -84,11 +84,14 @@ function ItemForm({ setOpen, existingItem }: { setOpen: (open: boolean) => void;
   const { addItem, editItem } = useAppActions();
   const form = useForm<ItemFormValues>({
     resolver: zodResolver(itemSchema) as any,
-    defaultValues: existingItem ? { ...existingItem } : {
+    defaultValues: existingItem ? { 
+      ...existingItem,
+      depreciationDays: existingItem.depreciationDays || (existingItem.depreciationYears ? Math.max(1, Math.round(existingItem.depreciationYears * 365)) : 365)
+    } : {
       name: '',
       price: 0,
       purchaseDate: new Date(),
-      depreciationYears: 3
+      depreciationDays: 365 * 3
     },
   });
   function onSubmit(values: ItemFormValues) {
@@ -121,8 +124,8 @@ function ItemForm({ setOpen, existingItem }: { setOpen: (open: boolean) => void;
             </Popover><FormMessage />
           </FormItem>
         )} />
-        <FormField control={form.control} name="depreciationYears" render={({ field }) => (
-          <FormItem><FormLabel>Depreciation (Years)</FormLabel><FormControl><Input type="number" placeholder="3" {...field} /></FormControl><FormMessage /></FormItem>
+        <FormField control={form.control} name="depreciationDays" render={({ field }) => (
+          <FormItem><FormLabel>Depreciation (Days)</FormLabel><FormControl><Input type="number" placeholder="1095" {...field} /></FormControl><FormMessage /></FormItem>
         )} />
         <DialogFooter className="pt-4">
           <Button type="submit">{existingItem ? 'Save Changes' : 'Add Item'}</Button>

@@ -46,7 +46,9 @@ db.exec(`
     name TEXT NOT NULL,
     price REAL NOT NULL,
     purchase_date DATE NOT NULL,
-    depreciation_years INTEGER NOT NULL,
+    depreciation_years INTEGER,
+    depreciation_days INTEGER,
+    depreciation_period_type TEXT DEFAULT 'days',
     created_by INTEGER NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
@@ -61,7 +63,33 @@ db.exec(`
     UNIQUE(group_member_id),
     FOREIGN KEY (group_member_id) REFERENCES group_members (id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS user_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    type TEXT NOT NULL,
+    expires_at DATETIME,
+    used INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+  );
 `);
+
+// Ensure compatibility with older databases: add new columns if they don't exist
+try {
+  const cols = db.prepare("PRAGMA table_info('shared_items')").all() as Array<{ name: string }>;
+  const colNames = cols.map(c => c.name);
+  if (!colNames.includes('depreciation_days')) {
+    db.exec("ALTER TABLE shared_items ADD COLUMN depreciation_days INTEGER;");
+  }
+  if (!colNames.includes('depreciation_period_type')) {
+    db.exec("ALTER TABLE shared_items ADD COLUMN depreciation_period_type TEXT DEFAULT 'days';");
+  }
+} catch (err) {
+  // If PRAGMA fails for any reason, log and continue; the app can still run but item creation will error until fixed.
+  console.error('Compatibility migration check failed:', err);
+}
 
 // Generate unique invite codes
 function generateInviteCode(): string {
@@ -152,6 +180,36 @@ export const dbHelpers = {
     return stmt.all(groupId) as any[];
   },
 
+  // Token operations (invitations, password resets)
+  createUserToken: (userId: number, token: string, type: string, expiresAt?: string) => {
+    const stmt = db.prepare('INSERT INTO user_tokens (user_id, token, type, expires_at) VALUES (?, ?, ?, ?)');
+    return stmt.run(userId, token, type, expiresAt || null);
+  },
+
+  getUserToken: (token: string, type?: string) => {
+    if (type) {
+      const stmt = db.prepare('SELECT ut.*, u.email, u.name FROM user_tokens ut JOIN users u ON ut.user_id = u.id WHERE ut.token = ? AND ut.type = ?');
+      return stmt.get(token, type) as any;
+    }
+    const stmt = db.prepare('SELECT ut.*, u.email, u.name FROM user_tokens ut JOIN users u ON ut.user_id = u.id WHERE ut.token = ?');
+    return stmt.get(token) as any;
+  },
+
+  markUserTokenUsed: (token: string) => {
+    const stmt = db.prepare('UPDATE user_tokens SET used = 1 WHERE token = ?');
+    return stmt.run(token);
+  },
+
+  updateUserPassword: (userId: number, passwordHash: string) => {
+    const stmt = db.prepare('UPDATE users SET password_hash = ? WHERE id = ?');
+    return stmt.run(passwordHash, userId);
+  },
+
+  updateUserName: (userId: number, name: string) => {
+    const stmt = db.prepare('UPDATE users SET name = ? WHERE id = ?');
+    return stmt.run(name, userId);
+  },
+
   updateMemberLeaveDate: (groupMemberId: number, leaveDate: string | null) => {
     const stmt = db.prepare(`
       INSERT INTO member_leave_dates (group_member_id, leave_date) 
@@ -163,13 +221,33 @@ export const dbHelpers = {
     return stmt.run(groupMemberId, leaveDate);
   },
 
-  // Item operations
-  createItem: (groupId: number, name: string, price: number, purchaseDate: string, depreciationYears: number, createdBy: number) => {
+  updateMemberJoinedAt: (groupMemberId: number, joinedAt: string) => {
     const stmt = db.prepare(`
-      INSERT INTO shared_items (group_id, name, price, purchase_date, depreciation_years, created_by) 
-      VALUES (?, ?, ?, ?, ?, ?)
+      UPDATE group_members
+      SET joined_at = ?
+      WHERE id = ?
     `);
-    return stmt.run(groupId, name, price, purchaseDate, depreciationYears, createdBy);
+    return stmt.run(joinedAt, groupMemberId);
+  },
+
+  // Item operations
+  createItem: (groupId: number, name: string, price: number, purchaseDate: string, depreciationValue: number, depreciationPeriodType: 'days' | 'years', createdBy: number) => {
+    // depreciationValue is either years or days depending on depreciationPeriodType
+    let depreciationDays: number;
+    let depreciationYearsVal: number | null = null;
+    if (depreciationPeriodType === 'days') {
+      depreciationDays = Math.max(1, Math.round(depreciationValue || 1));
+      depreciationYearsVal = Math.round(depreciationDays / 365);
+    } else {
+      depreciationDays = Math.max(1, Math.round((depreciationValue || 1) * 365));
+      depreciationYearsVal = depreciationValue || null;
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO shared_items (group_id, name, price, purchase_date, depreciation_years, depreciation_days, depreciation_period_type, created_by) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    return stmt.run(groupId, name, price, purchaseDate, depreciationYearsVal, depreciationDays, depreciationPeriodType, createdBy);
   },
 
   getGroupItems: (groupId: number) => {
@@ -183,13 +261,24 @@ export const dbHelpers = {
     return stmt.all(groupId) as any[];
   },
 
-  updateItem: (itemId: number, name: string, price: number, purchaseDate: string, depreciationYears: number) => {
+  updateItem: (itemId: number, name: string, price: number, purchaseDate: string, depreciationValue: number, depreciationPeriodType: 'days' | 'years', depreciationYears?: number) => {
+    // depreciationValue is either years or days depending on depreciationPeriodType
+    let depreciationDays: number;
+    let depreciationYearsVal: number | null = null;
+    if (depreciationPeriodType === 'days') {
+      depreciationDays = Math.max(1, Math.round(depreciationValue || 1));
+      depreciationYearsVal = Math.round(depreciationDays / 365);
+    } else {
+      depreciationDays = Math.max(1, Math.round((depreciationValue || 1) * 365));
+      depreciationYearsVal = typeof depreciationYears === 'number' ? depreciationYears : depreciationValue || null;
+    }
+
     const stmt = db.prepare(`
       UPDATE shared_items 
-      SET name = ?, price = ?, purchase_date = ?, depreciation_years = ?
+      SET name = ?, price = ?, purchase_date = ?, depreciation_years = ?, depreciation_days = ?, depreciation_period_type = ?
       WHERE id = ?
     `);
-    return stmt.run(name, price, purchaseDate, depreciationYears, itemId);
+    return stmt.run(name, price, purchaseDate, depreciationYearsVal, depreciationDays, depreciationPeriodType, itemId);
   },
 
   deleteItem: (itemId: number) => {
