@@ -119,6 +119,22 @@ export const dbHelpers = {
     return stmt.get(id) as any;
   },
 
+  getAllUsers: () => {
+    const stmt = db.prepare('SELECT id, email, name, created_at FROM users ORDER BY name');
+    return stmt.all() as any[];
+  },
+
+  searchUsers: (query: string) => {
+    const stmt = db.prepare(`
+      SELECT id, email, name, created_at FROM users 
+      WHERE LOWER(name) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?)
+      ORDER BY name
+      LIMIT 20
+    `);
+    const searchPattern = `%${query}%`;
+    return stmt.all(searchPattern, searchPattern) as any[];
+  },
+
   // Group operations
   createGroup: (name: string, description: string | null, ownerId: number, ownerJoinedAt?: string) => {
     const inviteCode = generateInviteCode();
@@ -170,7 +186,8 @@ export const dbHelpers = {
   // Member operations
   getGroupMembers: (groupId: number) => {
     const stmt = db.prepare(`
-      SELECT gm.*, u.name, u.email, mld.leave_date
+      SELECT gm.*, u.name, u.email, mld.leave_date,
+      (SELECT count(*) FROM user_tokens ut WHERE ut.user_id = u.id AND ut.type = 'signup' AND ut.used = 0) as pending_invite_count
       FROM group_members gm
       JOIN users u ON gm.user_id = u.id
       LEFT JOIN member_leave_dates mld ON gm.id = mld.group_member_id
@@ -184,6 +201,17 @@ export const dbHelpers = {
   createUserToken: (userId: number, token: string, type: string, expiresAt?: string) => {
     const stmt = db.prepare('INSERT INTO user_tokens (user_id, token, type, expires_at) VALUES (?, ?, ?, ?)');
     return stmt.run(userId, token, type, expiresAt || null);
+  },
+
+  getActiveTokenForUser: (userId: number, type: string) => {
+    const stmt = db.prepare(`
+      SELECT * FROM user_tokens 
+      WHERE user_id = ? AND type = ? AND used = 0 
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+      ORDER BY created_at DESC
+      LIMIT 1
+    `);
+    return stmt.get(userId, type) as any;
   },
 
   getUserToken: (token: string, type?: string) => {

@@ -45,7 +45,9 @@ db.exec(`
     name TEXT NOT NULL,
     price REAL NOT NULL,
     purchase_date DATE NOT NULL,
-    depreciation_years INTEGER NOT NULL,
+    depreciation_years INTEGER,
+    depreciation_days INTEGER,
+    depreciation_period_type TEXT DEFAULT 'days',
     created_by INTEGER NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
@@ -59,6 +61,17 @@ db.exec(`
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(group_member_id),
     FOREIGN KEY (group_member_id) REFERENCES group_members (id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS user_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    type TEXT NOT NULL,
+    expires_at DATETIME,
+    used INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
   );
 `);
 

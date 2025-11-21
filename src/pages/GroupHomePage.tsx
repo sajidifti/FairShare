@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { format, isValid } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Calendar as CalendarIcon, PlusCircle, UserPlus, Trash2, Edit, Info, RotateCw, Users, Package, DollarSign, Copy, Check, Settings } from 'lucide-react';
+import { Calendar as CalendarIcon, PlusCircle, UserPlus, Trash2, Edit, Info, RotateCw, Users, Package, DollarSign, Copy, Check, Settings, ChevronsUpDown, Link as LinkIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -22,14 +22,25 @@ import { toast } from 'sonner';
 import { cn, formatCurrency } from '@/lib/utils';
 import { convertDaysToYears, convertYearsToDays } from '@/lib/item-utils';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
 
 interface Member {
   id: number;
+  user_id: number;
+  group_id: number;
+  role: 'owner' | 'admin' | 'member';
+  joined_at: string;
   name: string;
   email: string;
-  role: string;
-  joined_at: string;
-  leave_date?: string;
+  leave_date?: string | null;
+  pending_invite_count?: number;
 }
 
 interface Item {
@@ -168,6 +179,82 @@ function calculateTotalRefundForMember(member: Member, items: Item[], allMembers
   }, 0);
 }
 
+
+function UserCombobox({ onSelect }: { onSelect: (user: { name: string; email: string }) => void }) {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState("")
+  const [query, setQuery] = useState("")
+  const [users, setUsers] = useState<{ id: number; name: string; email: string }[]>([])
+
+  useEffect(() => {
+    if (query.length < 2) {
+      setUsers([])
+      return
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/users?q=${encodeURIComponent(query)}`)
+        const data = await res.json()
+        if (data.users) setUsers(data.users)
+      } catch (error) {
+        console.error('Search error:', error)
+      }
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [query])
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between"
+        >
+          {value
+            ? users.find((user) => user.email === value)?.name || value
+            : "Search user..."}
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[300px] p-0">
+        <Command shouldFilter={false}>
+          <CommandInput placeholder="Search by name or email..." onValueChange={setQuery} />
+          <CommandList>
+            <CommandEmpty>No user found.</CommandEmpty>
+            <CommandGroup>
+              {users.map((user) => (
+                <CommandItem
+                  key={user.id}
+                  value={user.email}
+                  onSelect={(currentValue) => {
+                    setValue(currentValue === value ? "" : currentValue)
+                    onSelect({ name: user.name, email: user.email })
+                    setOpen(false)
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      "mr-2 h-4 w-4",
+                      value === user.email ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                  <div className="flex flex-col">
+                    <span>{user.name}</span>
+                    <span className="text-xs text-muted-foreground">{user.email}</span>
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
   setOpen: (open: boolean) => void;
@@ -396,9 +483,26 @@ function AddMemberForm({ groupId, onSuccess }: { groupId: number; onSuccess: (li
     }
   };
 
+  const handleUserSelect = (user: { name: string; email: string }) => {
+    form.setValue('name', user.name);
+    form.setValue('email', user.email);
+  };
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 pt-4">
+        <div className="space-y-2">
+          <FormLabel>Search Existing User</FormLabel>
+          <UserCombobox onSelect={handleUserSelect} />
+        </div>
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <span className="w-full border-t" />
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-background px-2 text-muted-foreground">Or enter details manually</span>
+          </div>
+        </div>
         <FormField control={form.control} name="name" render={({ field }) => (
           <FormItem><FormLabel>Name</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
         )} />
@@ -444,6 +548,25 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
       setCopied(true);
       toast.success('Invite code copied to clipboard!');
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyInviteLink = async (memberId: number) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'get-invite-link', memberId }),
+      });
+      const data = await res.json();
+      if (res.ok && data.link) {
+        await navigator.clipboard.writeText(data.link);
+        toast.success('Invite link copied to clipboard');
+      } else {
+        toast.error(data.error || 'Failed to get invite link');
+      }
+    } catch (error) {
+      toast.error('Failed to get invite link');
     }
   };
 
@@ -682,10 +805,18 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
                                 />
                               </div>
 
-                              <Button variant="outline" className="w-full" onClick={handleResetPassword}>
-                                <RotateCw className="mr-2 h-4 w-4" />
-                                Reset Password
-                              </Button>
+                              <div className="flex gap-2">
+                                <Button variant="outline" className="flex-1" onClick={handleResetPassword}>
+                                  <RotateCw className="mr-2 h-4 w-4" />
+                                  Reset Password
+                                </Button>
+                                {member.pending_invite_count && member.pending_invite_count > 0 && (
+                                  <Button variant="outline" className="flex-1" onClick={() => handleCopyInviteLink(member.id)} title="Copy Invite Link">
+                                    <LinkIcon className="mr-2 h-4 w-4" />
+                                    Copy Invite
+                                  </Button>
+                                )}
+                              </div>
                             </div>
                           )}
 

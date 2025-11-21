@@ -109,6 +109,34 @@ export async function POST(
       return NextResponse.json({ success: true, link, userId: user.id, email: user.email });
     }
 
+    if (action === 'get-invite-link') {
+      const { memberId } = body as { memberId: number };
+      if (!memberId) return NextResponse.json({ error: 'memberId required' }, { status: 400 });
+
+      // Verify the memberId belongs to this group
+      const members = dbHelpers.getGroupMembers(groupId);
+      const member = members.find((m: any) => m.id === memberId);
+      if (!member) return NextResponse.json({ error: 'Member not found in this group' }, { status: 404 });
+
+      const userId = member.user_id;
+
+      // Check if there's an active signup token
+      let token = dbHelpers.getActiveTokenForUser(userId, 'signup');
+      
+      if (!token) {
+        // Create new token
+        const newToken = crypto.randomBytes(24).toString('hex');
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        dbHelpers.createUserToken(userId, newToken, 'signup', expiresAt);
+        token = { token: newToken };
+      }
+
+      const appUrl = process.env.APP_URL || new URL(request.url).origin;
+      const link = `${appUrl}/auth/accept-invite?token=${token.token}`;
+      
+      return NextResponse.json({ success: true, link, userId, email: member.email });
+    }
+
     return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
   } catch (error) {
     console.error('Add member error:', error);

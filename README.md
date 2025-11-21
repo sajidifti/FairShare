@@ -63,6 +63,20 @@ npm run reset-db
 node scripts/reset-db.cjs
 ```
 
+- Seed DB (populates the DB with initial test data):
+
+```bash
+npm run seed-db
+# or
+node scripts/seed-db.cjs
+```
+
+### Recent Updates (Member Management)
+
+- **Copy Invite Link**: Owners can copy invite links for pending members directly from Group Settings.
+- **Searchable User Dropdown**: Easily find and add existing users to groups by name or email.
+- **Signup Updates**: Existing members can update their name and password when accepting an invite.
+
 Notes and safety
 
 - `reset-db` is destructive and will remove all data. Back up your DB file before running if you care about the data.
