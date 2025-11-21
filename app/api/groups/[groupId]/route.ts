@@ -30,6 +30,7 @@ export async function GET(
 
     // Get group members
     const members = dbHelpers.getGroupMembers(groupId);
+  const currentUserRole = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
 
     // Get group items
     const items = dbHelpers.getGroupItems(groupId);
@@ -39,6 +40,7 @@ export async function GET(
         ...group,
         members,
         items,
+        currentUserRole,
       },
     });
   } catch (error) {

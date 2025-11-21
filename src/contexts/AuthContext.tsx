@@ -30,8 +30,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await fetch('/api/auth/me');
       if (response.ok) {
-        const data = await response.json();
-        setUser(data.user);
+        const data = (await response.json()) as { user?: User };
+        setUser(data.user ?? null);
       }
     } catch (error) {
       console.error('Auth check failed:', error);
@@ -49,13 +49,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ email, password }),
     });
 
-    const data = await response.json();
+    const data = (await response.json()) as { user?: User; error?: string } | any;
 
     if (!response.ok) {
       throw new Error(data.error || 'Login failed');
     }
 
-    setUser(data.user);
+    setUser(data.user ?? null);
   };
 
   const register = async (name: string, email: string, password: string) => {
@@ -67,13 +67,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ name, email, password }),
     });
 
-    const data = await response.json();
+    const data = (await response.json()) as { user?: User; error?: string } | any;
 
     if (!response.ok) {
       throw new Error(data.error || 'Registration failed');
     }
 
-    setUser(data.user);
+    setUser(data.user ?? null);
   };
 
   const logout = async () => {

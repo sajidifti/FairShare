@@ -7,6 +7,9 @@
     "dev": "next dev",
     "build": "next build",
     "lint": "eslint --cache -f json --quiet .",
+    "init-db": "node scripts/init-db.cjs",
+    "reset-db": "node scripts/reset-db.cjs",
+    "test": "vitest",
     "start": "next start",
     "deploy": "bun run build && wrangler deploy",
     "cf-typegen": "wrangler types"
@@ -107,6 +110,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "5.8",
     "typescript-eslint": "^8.26.1",
-    "vite": "^6.3.1"
+    "vite": "^6.3.1",
+    "vitest": "^1.0.0"
   }
 }

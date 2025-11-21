@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAuth } from '@/lib/auth';
 import { dbHelpers } from '@/lib/database';
+import { normalizeIncomingItemPayload } from '@/lib/item-utils';
 
 const updateItemSchema = z.object({
   name: z.string().min(2, 'Item name must be at least 2 characters'),
   price: z.number().positive('Price must be positive'),
   purchaseDate: z.string().min(1, 'Purchase date is required'),
-  depreciationYears: z.number().int().min(1, 'Must be at least 1 year'),
+  depreciationDays: z.number().int().min(1, 'Must be at least 1 day'),
+  periodType: z.enum(['days', 'years']).default('days'),
 });
 
 export async function PUT(
@@ -28,10 +30,18 @@ export async function PUT(
       );
     }
 
-    const body = await request.json();
-    const { name, price, purchaseDate, depreciationYears } = updateItemSchema.parse(body);
+  const raw = await request.json();
+  const parsedRaw = normalizeIncomingItemPayload(raw);
 
-    const result = dbHelpers.updateItem(itemId, name, price, purchaseDate, depreciationYears);
+  const parsed = updateItemSchema.parse({
+    name: parsedRaw.name,
+    price: parsedRaw.price,
+    purchaseDate: parsedRaw.purchaseDate,
+    depreciationDays: parsedRaw.depreciationDays,
+    periodType: parsedRaw.periodType,
+  });
+
+  const result = dbHelpers.updateItem(itemId, parsed.name, parsed.price, parsed.purchaseDate, parsed.depreciationDays, parsed.periodType);
 
     if (result.changes === 0) {
       return NextResponse.json(
@@ -44,17 +54,19 @@ export async function PUT(
       success: true,
       item: {
         id: itemId,
-        name,
-        price,
-        purchaseDate,
-        depreciationYears,
+        name: parsed.name,
+        price: parsed.price,
+        purchaseDate: parsed.purchaseDate,
+        // return canonical keys
+        period_days: parsed.depreciationDays,
+        period_type: parsed.periodType,
         groupId,
       },
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { error: 'Validation failed', details: error.errors },
+        { error: 'Validation failed', details: error.issues },
         { status: 400 }
       );
     }

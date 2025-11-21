@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 
+// This route reads cookies/session data and must run dynamically on the server.
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const session = await getSession();

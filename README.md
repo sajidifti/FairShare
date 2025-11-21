@@ -1,83 +1,89 @@
-# FairShare Ledger
+# FairShare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sajidifti/FairShare)
+FairShare is a depreciation-based cost-sharing calculator designed to split costs for mess/hostel items (or other shared assets) between group members over time.
 
-A minimalist, visually stunning web application to simplify cost-sharing for flatmates. It calculates the refund amount for a leaving member based on a linear depreciation model for shared appliances.
+This project is built with Next.js and uses a local SQLite database (`better-sqlite3`) to persist users, groups, group members, shared items, and member leave dates.
 
-## Description
+Key features
 
-FairShare Ledger is a visually stunning, minimalist web application designed to simplify cost-sharing for flatmates. It calculates the refund amount for a leaving member based on a linear depreciation model for shared appliances. The application features a clean, single-page interface where users can input item details such as price, purchase date, and the total number of members. It also takes the leaving member's departure date and the agreed-upon depreciation timeline to instantly compute the fair refund amount. The result is displayed clearly, along with a transparent breakdown of the calculation, ensuring trust and clarity among users. The entire experience is designed to be intuitive, fast, and visually pleasing, turning a potentially complex calculation into a simple, elegant process.
+- Depreciation-aware cost calculations for shared items
+- Group management with invite codes and roles (owner/admin/member)
+- Persistent local storage using SQLite
 
-## Key Features
+Tech stack
 
--   **Instant Refund Calculation**: Quickly determine the fair refund amount for a leaving member.
--   **Linear Depreciation Model**: Uses a standard, easy-to-understand depreciation method.
--   **Transparent Breakdown**: Shows a detailed summary of how the final amount was calculated.
--   **Minimalist UI**: A clean, single-page interface that is intuitive and easy to use.
--   **Fully Responsive**: Flawless user experience across desktops, tablets, and mobile devices.
--   **Client-Side Logic**: All calculations happen in your browser; no data is ever sent to a server.
+- Next.js 14
+- React
+- TypeScript
+- better-sqlite3 (SQLite)
 
-## Technology Stack
+Repository layout (high level)
 
--   **Framework**: React (Vite)
--   **Styling**: Tailwind CSS
--   **UI Components**: shadcn/ui
--   **Icons**: Lucide React
--   **Form Management**: React Hook Form
--   **Validation**: Zod
--   **Animations**: Framer Motion
--   **Date Handling**: date-fns
--   **Notifications**: Sonner
--   **Deployment**: Cloudflare Pages & Workers
+- `app/` — Next.js app routes and API endpoints
+- `src/lib/database.ts` — DB helper that opens `fairshare.db` and creates tables on import
+- `scripts/` — helper scripts to initialize / reset the local DB
 
-## Getting Started
+Getting started — run locally
 
-Follow these instructions to get a copy of the project up and running on your local machine for development and testing purposes.
+Prerequisites
 
-### Prerequisites
+- Node.js (v18+) and npm (or Bun if you prefer; package.json uses npm scripts)
 
-You need to have [Bun](https://bun.sh/) installed on your machine.
+Install dependencies
 
-### Installation
-
-1.  **Clone the repository:**
-    ```sh
-    git clone https://github.com/your-username/fairshare_ledger.git
-    ```
-2.  **Navigate to the project directory:**
-    ```sh
-    cd fairshare_ledger
-    ```
-3.  **Install dependencies:**
-    ```sh
-    bun install
-    ```
-
-## Development
-
-To run the application in development mode, use the following command. This will start a local server, typically on `http://localhost:3000`.
-
-```sh
-bun run dev
+```bash
+npm install
+# or, if you use bun:
+# bun install
 ```
 
-The application will automatically reload if you make changes to the source files.
+Start the dev server
 
-## Deployment
+```bash
+npm run dev
+```
 
-This project is configured for easy deployment to Cloudflare Pages.
+Database: initialize and reset
 
-To deploy your application, simply run the build command followed by the deploy command:
+The project uses a local SQLite file `fairshare.db` at the repository root. There are helper scripts to initialize or recreate the DB.
 
-1.  **Build the application:**
-    ```sh
-    bun run build
-    ```
-2.  **Deploy to Cloudflare:**
-    ```sh
-    bun run deploy
-    ```
+- Initialize DB (creates `fairshare.db` and the required tables if not present):
 
-Alternatively, you can connect your GitHub repository to Cloudflare Pages for continuous deployment.
+```bash
+npm run init-db
+# or
+node scripts/init-db.cjs
+```
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sajidifti/FairShare)
+- Reset DB (destructive) — deletes the existing `fairshare.db` and recreates an empty DB with the schema:
+
+```bash
+npm run reset-db
+# or
+node scripts/reset-db.cjs
+```
+
+Notes and safety
+
+- `reset-db` is destructive and will remove all data. Back up your DB file before running if you care about the data.
+- The app will also create the DB automatically when `src/lib/database.ts` is imported (for example, when you run the Next.js dev server and hit a server-side route that imports the helper).
+- `fairshare.db` is ignored via `.gitignore` by default to avoid committing local databases. If you need a sample DB for CI or demos, create a separate tracked file (e.g., `dev/seed.fairshare.db`) or add a seed script.
+
+Migration and future improvements
+
+- Currently the schema is created imperatively from `src/lib/database.ts` and the `scripts/init-db.cjs` script. For schema evolution in production, consider one of the following:
+  - Add a simple migrations runner that stores applied migrations in a table (recommended for small projects)
+  - Adopt Prisma or Knex migrations for versioned migrations and stronger tooling
+
+Contributing
+
+- Open issues or PRs for bugs or enhancements.
+- If adding DB schema changes, add a migration under `migrations/` or update the `scripts/` tooling so upgrades are reproducible.
+
+License
+
+- (Add your license here) — feel free to add an appropriate license to the repo.
+
+Contact
+
+- For questions, ping the repo owner or open an issue.

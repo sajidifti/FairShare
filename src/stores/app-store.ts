@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { v4 as uuidv4 } from 'uuid';
-import { differenceInDays, addYears, max, min } from 'date-fns';
+import { differenceInDays, addYears, max, min, addDays } from 'date-fns';
 export interface Member {
   id: string;
   name: string;
@@ -14,7 +14,8 @@ export interface Item {
   name: string;
   price: number;
   purchaseDate: Date;
-  depreciationYears: number;
+  depreciationYears?: number;
+  depreciationDays?: number;
 }
 interface AppState {
   members: Member[];
@@ -71,22 +72,30 @@ export const useAppStore = create<AppState & { actions: AppActions }>()(
         resetStore: () => set(initialState),
       },
     })),
-    {
-      name: 'fairshare-ledger-storage',
-      storage: createJSONStorage(() => localStorage, {
-        reviver: (key, value) => {
-          if (['purchaseDate', 'leaveDate', 'joiningDate'].includes(key)) {
-            if (value && typeof value === 'string') {
-              const date = new Date(value);
-              return isNaN(date.getTime()) ? null : date;
+    // Persist options: only enable storage when running in the browser
+    (() => {
+      const baseOptions: any = {
+        name: 'fairshare-ledger-storage',
+        // This is the key change: only persist the state, not the actions.
+        partialize: (state: AppState) => ({ members: state.members, items: state.items }),
+      };
+
+      if (typeof window !== 'undefined') {
+        baseOptions.storage = createJSONStorage(() => localStorage, {
+          reviver: (key: string, value: unknown) => {
+            if (['purchaseDate', 'leaveDate', 'joiningDate'].includes(key)) {
+              if (value && typeof value === 'string') {
+                const date = new Date(value);
+                return isNaN(date.getTime()) ? null : date;
+              }
             }
-          }
-          return value;
-        },
-      }),
-      // This is the key change: only persist the state, not the actions.
-      partialize: (state) => ({ members: state.members, items: state.items }),
-    }
+            return value;
+          },
+        });
+      }
+
+      return baseOptions;
+    })()
   )
 );
 // --- Selectors ---
@@ -95,31 +104,53 @@ export const useItems = () => useAppStore((state) => state.items);
 export const useAppActions = () => useAppStore((state) => state.actions);
 // --- Calculation Logic ---
 export const calculateRefundForItem = (leavingMember: Member, item: Item, allMembers: Member[]): number => {
-  if (!leavingMember.leaveDate || leavingMember.leaveDate <= item.purchaseDate) {
-    return 0;
+  if (!leavingMember.leaveDate || leavingMember.leaveDate <= item.purchaseDate) return 0;
+
+  // Depreciation period in days: prefer explicit days, otherwise convert years -> days
+  const depreciationDays = Math.max(1, Math.round((item.depreciationDays ?? (item.depreciationYears ? item.depreciationYears * 365 : 365))));
+
+  const purchaseDate = item.purchaseDate;
+  const depreciationEnd = addDays(new Date(purchaseDate.getTime()), depreciationDays - 1);
+
+  // If leave after depreciation end, no refund
+  if (leavingMember.leaveDate >= depreciationEnd) return 0;
+
+  // The member only pays for days they were present during the depreciation window
+  const startDate = leavingMember.joiningDate > purchaseDate ? leavingMember.joiningDate : purchaseDate;
+  const endDate = leavingMember.leaveDate < depreciationEnd ? leavingMember.leaveDate : depreciationEnd;
+  if (endDate < startDate) return 0;
+
+  const perDayValue = item.price / depreciationDays;
+  let total = 0;
+  const oneDayMs = 1000 * 60 * 60 * 24;
+
+  const normalize = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  let cursor = normalize(startDate);
+  const last = normalize(endDate);
+
+  while (cursor.getTime() <= last.getTime()) {
+    const presentCount = allMembers.filter(m => {
+      const jm = m.joiningDate;
+      const lm = m.leaveDate;
+      const day = cursor;
+      if (jm.getTime() > day.getTime()) return false;
+      if (lm && lm.getTime() < day.getTime()) return false;
+      return true;
+    }).length;
+
+    if (presentCount > 0) total += perDayValue / presentCount;
+
+    cursor = new Date(cursor.getTime() + oneDayMs);
   }
-  const depreciationEndDate = addYears(item.purchaseDate, item.depreciationYears);
-  if (leavingMember.leaveDate >= depreciationEndDate) {
-    return 0;
-  }
-  const totalDaysInPeriod = differenceInDays(depreciationEndDate, item.purchaseDate);
-  if (totalDaysInPeriod <= 0) return 0;
-  const dailyDepreciation = item.price / totalDaysInPeriod;
-  const remainingValueAtLeaveDate = item.price - (differenceInDays(leavingMember.leaveDate, item.purchaseDate) * dailyDepreciation);
-  // Find members who were present for this item's purchase and are still present when the member leaves
-  const membersPresentForItem = allMembers.filter(m =>
-    m.joiningDate <= item.purchaseDate && // Joined before or on purchase date
-    (!m.leaveDate || m.leaveDate > item.purchaseDate) // Haven't left before purchase date
-  );
-  if (membersPresentForItem.length === 0) return 0;
-  // The leaving member's share of the remaining value
-  return remainingValueAtLeaveDate / membersPresentForItem.length;
+
+  return total;
 };
 export const calculateTotalRefundForMember = (member: Member, items: Item[], allMembers: Member[]): number => {
   if (!member.leaveDate) return 0;
+  const leaveDate = member.leaveDate;
   return items.reduce((total, item) => {
     // Only calculate for items purchased before the member leaves
-    if (item.purchaseDate < member.leaveDate) {
+    if (item.purchaseDate < leaveDate) {
       return total + calculateRefundForItem(member, item, allMembers);
     }
     return total;

@@ -19,6 +19,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { cn, formatCurrency } from '@/lib/utils';
+import { convertDaysToYears, convertYearsToDays } from '@/lib/item-utils';
 import { ThemeToggle } from '@/components/ThemeToggle';
 
 interface Member {
@@ -35,7 +36,8 @@ interface Item {
   name: string;
   price: number;
   purchase_date: string;
-  depreciation_years: number;
+  depreciation_years?: number;
+  depreciation_days?: number;
   created_by: number;
   created_by_name: string;
 }
@@ -48,29 +50,67 @@ const itemSchema = z.object({
   name: z.string().min(2, { message: "Item name must be at least 2 characters." }),
   price: z.coerce.number().positive({ message: "Price must be a positive number." }),
   purchaseDate: z.date({ message: "A valid purchase date is required." }),
-  depreciationYears: z.coerce.number().int().min(1, { message: "Must be at least 1 year." }),
+  periodType: z.enum(['days', 'years']),
+  periodValue: z.coerce.number().int().min(1, { message: 'Must be at least 1' }),
 });
 
 type ItemFormValues = z.infer<typeof itemSchema>;
 
 function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]): number {
+  // If member has no leave date, they haven't left — assume no refund due yet
   if (!member.leave_date) return 0;
-  
+
   const purchaseDate = new Date(item.purchase_date);
-  const leaveDate = new Date(member.leave_date);
-  
-  if (purchaseDate >= leaveDate) return 0;
-  
-  const yearsOwned = (leaveDate.getTime() - purchaseDate.getTime()) / (1000 * 60 * 60 * 24 * 365);
-  const depreciation = Math.min(yearsOwned / item.depreciation_years, 1);
-  const currentValue = item.price * (1 - depreciation);
-  
-  const membersAtPurchase = allMembers.filter(m => 
-    new Date(m.joined_at) <= purchaseDate && 
-    (!m.leave_date || new Date(m.leave_date) > purchaseDate)
-  ).length;
-  
-  return currentValue / membersAtPurchase;
+  const memberJoinDate = new Date(member.joined_at);
+  const memberLeaveDate = new Date(member.leave_date);
+
+  // If the member left on or before purchase date, they pay nothing
+  if (memberLeaveDate < purchaseDate) return 0;
+
+  // Depreciation period in days (linear). Prefer explicit depreciation_days if present, otherwise convert years -> days.
+  const depreciationDays = Math.max(1, Math.round((item.depreciation_days ?? (item.depreciation_years ? item.depreciation_years * 365 : 365))));
+
+  // Depreciation end date (inclusive)
+  const depreciationEnd = new Date(purchaseDate.getTime());
+  depreciationEnd.setDate(depreciationEnd.getDate() + (depreciationDays - 1));
+
+  // The member only pays for days they were present during the depreciation window
+  const startDate = memberJoinDate > purchaseDate ? memberJoinDate : purchaseDate;
+  const endDate = memberLeaveDate < depreciationEnd ? memberLeaveDate : depreciationEnd;
+
+  if (endDate < startDate) return 0;
+
+  // Per-day cost of the item over its depreciation period
+  const perDayValue = item.price / depreciationDays;
+
+  // Iterate each day in [startDate, endDate] (inclusive) and allocate per-day cost
+  let total = 0;
+  const oneDayMs = 1000 * 60 * 60 * 24;
+
+  // Normalize dates to local midnight for iteration
+  const normalize = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  let cursor = normalize(startDate);
+  const last = normalize(endDate);
+
+  while (cursor.getTime() <= last.getTime()) {
+    // Count members present on this day (joined_on <= day && (no leave_date || leave_date >= day))
+    const presentCount = allMembers.filter(m => {
+      const jm = new Date(m.joined_at);
+      const lm = m.leave_date ? new Date(m.leave_date) : null;
+      const day = cursor;
+      if (jm.getTime() > day.getTime()) return false;
+      if (lm && lm.getTime() < day.getTime()) return false;
+      return true;
+    }).length;
+
+    if (presentCount > 0) {
+      total += perDayValue / presentCount;
+    }
+
+    cursor = new Date(cursor.getTime() + oneDayMs);
+  }
+
+  return total;
 }
 
 function calculateTotalRefundForMember(member: Member, items: Item[], allMembers: Member[]): number {
@@ -84,19 +124,65 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
   onSuccess: () => void;
 }) {
   const form = useForm<ItemFormValues>({
-    resolver: zodResolver(itemSchema),
-    defaultValues: existingItem ? { 
-      name: existingItem.name,
-      price: existingItem.price,
-      purchaseDate: new Date(existingItem.purchase_date),
-      depreciationYears: existingItem.depreciation_years
-    } : {
+    resolver: zodResolver(itemSchema) as any,
+    // We'll set initial values via reset below so that the form updates when editing different items
+    defaultValues: {
       name: '',
       price: 0,
       purchaseDate: new Date(),
-      depreciationYears: 3
+      periodType: 'days',
+      periodValue: 365 * 3,
     },
   });
+
+  // When an existing item is provided (editing), reset the form so fields reflect the item's stored depreciation units
+  useEffect(() => {
+    if (!existingItem) {
+      form.reset({
+        name: '',
+        price: 0,
+        purchaseDate: new Date(),
+        periodType: 'days',
+        periodValue: 365 * 3,
+      });
+      return;
+    }
+
+    // Determine period type: prefer canonical `period_type`/`period_days` if present, otherwise fall back to older fields
+    const explicitType = (existingItem as any).period_type ?? (existingItem as any).depreciation_period_type;
+    const daysValue = (existingItem as any).period_days ?? (existingItem as any).depreciation_days;
+    const yearsValue = (existingItem as any).depreciation_years;
+    const hasDays = typeof daysValue === 'number' && !isNaN(daysValue);
+    const hasYears = typeof yearsValue === 'number' && !isNaN(yearsValue);
+
+    const periodType: 'days' | 'years' = explicitType === 'years' || (!explicitType && hasYears && !hasDays)
+      ? 'years'
+      : 'days';
+
+    // Compute period value according to chosen type
+    let periodValue = 365 * 3;
+    if (periodType === 'years') {
+      if (hasYears) {
+        periodValue = Math.max(1, Math.round(yearsValue));
+      } else if (hasDays) {
+        periodValue = Math.max(1, Math.round(daysValue / 365));
+      }
+    } else {
+      if (hasDays) {
+        periodValue = Math.max(1, Math.round(daysValue));
+      } else if (hasYears) {
+        periodValue = Math.max(1, Math.round(yearsValue * 365));
+      }
+    }
+
+    form.reset({
+      name: existingItem.name,
+      price: existingItem.price,
+      purchaseDate: new Date(existingItem.purchase_date),
+      periodType,
+      periodValue,
+    });
+  }, [existingItem]);
 
   async function onSubmit(values: ItemFormValues) {
     try {
@@ -115,17 +201,21 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
           name: values.name,
           price: values.price,
           purchaseDate: values.purchaseDate.toISOString().split('T')[0],
-          depreciationYears: values.depreciationYears,
+          // Save canonical fields expected by the backend: period_days and period_type.
+          // If the user selected years, convert years -> days before saving.
+          period_days: values.periodType === 'years' ? Math.max(1, Math.round(values.periodValue * 365)) : values.periodValue,
+          period_type: values.periodType,
         }),
       });
 
-      const data = await response.json();
+  const data = (await response.json()) as { error?: string } | any;
 
       if (response.ok) {
         toast.success(`Item "${values.name}" ${existingItem ? 'updated' : 'added'}.`);
         form.reset();
         setOpen(false);
-        onSuccess();
+        // Trigger parent refresh (reload items) if provided
+        try { onSuccess(); } catch (e) {}
       } else {
         toast.error(data.error || 'Failed to save item');
       }
@@ -174,11 +264,46 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
             <FormMessage />
           </FormItem>
         )} />
-        <FormField control={form.control} name="depreciationYears" render={({ field }) => (
+        <FormField control={form.control} name="periodType" render={({ field }) => (
           <FormItem>
-            <FormLabel>Depreciation (Years)</FormLabel>
+            <FormLabel>Period Type</FormLabel>
             <FormControl>
-              <Input type="number" placeholder="3" {...field} />
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={field.value === 'days' ? 'default' : 'outline'}
+                  onClick={() => {
+                    if (field.value === 'days') return;
+                    // switching from years -> days: convert value
+                    const current = form.getValues('periodValue') as number;
+                    const newVal = convertYearsToDays(Number(current) || 1);
+                    form.setValue('periodValue', newVal, { shouldValidate: true, shouldDirty: true });
+                    field.onChange('days');
+                  }}
+                >Days</Button>
+                <Button
+                  type="button"
+                  variant={field.value === 'years' ? 'default' : 'outline'}
+                  onClick={() => {
+                    if (field.value === 'years') return;
+                    // switching from days -> years: convert value (round)
+                    const current = form.getValues('periodValue') as number;
+                    const newVal = convertDaysToYears(Number(current) || 365);
+                    form.setValue('periodValue', newVal, { shouldValidate: true, shouldDirty: true });
+                    field.onChange('years');
+                  }}
+                >Years</Button>
+              </div>
+            </FormControl>
+            <FormMessage />
+          </FormItem>
+        )} />
+
+        <FormField control={form.control} name="periodValue" render={({ field }) => (
+          <FormItem>
+            <FormLabel>{form.watch('periodType') === 'years' ? 'Depreciation (Years)' : 'Depreciation (Days)'}</FormLabel>
+            <FormControl>
+              <Input type="number" placeholder={form.watch('periodType') === 'years' ? '3' : '1095'} {...field} />
             </FormControl>
             <FormMessage />
           </FormItem>
@@ -191,30 +316,139 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
   );
 }
 
-function MemberCard({ member, items, allMembers }: { member: Member; items: Item[]; allMembers: Member[] }) {
+function AddMemberForm({ groupId, onSuccess }: { groupId: number; onSuccess: (link: string) => void }) {
+  const schema = z.object({
+    name: z.string().min(1),
+    email: z.string().email(),
+    joinedAt: z.string().optional(),
+  });
+  type FormValues = z.infer<typeof schema>;
+
+  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { name: '', email: '', joinedAt: undefined } });
+
+  const onSubmit = async (values: FormValues) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'invite', name: values.name, email: values.email, joinedAt: values.joinedAt || undefined }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        onSuccess(data.link);
+      } else {
+        toast.error(data.error || 'Failed to invite member');
+      }
+    } catch (error) {
+      toast.error('Failed to invite member');
+    }
+  };
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 pt-4">
+        <FormField control={form.control} name="name" render={({ field }) => (
+          <FormItem><FormLabel>Name</FormLabel><FormControl><Input {...field} /></FormControl><FormMessage /></FormItem>
+        )} />
+        <FormField control={form.control} name="email" render={({ field }) => (
+          <FormItem><FormLabel>Email</FormLabel><FormControl><Input type="email" {...field} /></FormControl><FormMessage /></FormItem>
+        )} />
+        <FormField control={form.control} name="joinedAt" render={({ field }) => (
+          <FormItem><FormLabel>Joining Date (optional)</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
+        )} />
+        <div className="pt-4 flex justify-end"><Button type="submit">Invite</Button></div>
+      </form>
+    </Form>
+  );
+}
+
+function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: { member: Member; items: Item[]; allMembers: Member[]; isOwner: boolean; groupId: number; onRefresh: () => void }) {
   const totalRefund = calculateTotalRefundForMember(member, items, allMembers);
 
-  const handleUpdateLeaveDate = async (leaveDate: Date | null) => {
+  const handleUpdateLeaveDate = async (leaveDate: Date | undefined) => {
     try {
-      const response = await fetch(`/api/groups/${member.id}/members`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          leaveDate: leaveDate ? leaveDate.toISOString().split('T')[0] : null,
-        }),
-      });
+      const dateToSend = leaveDate ? leaveDate.toISOString().split('T')[0] : null;
+        const response = await fetch(`/api/groups/${groupId}/members`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            leaveDate: dateToSend,
+            memberId: member.id,
+          }),
+        });
 
       if (response.ok) {
         toast.success('Leave date updated');
         // Refresh data
-        window.location.reload();
+        try { onRefresh(); } catch { window.location.reload(); }
       } else {
         toast.error('Failed to update leave date');
       }
     } catch (error) {
       toast.error('Failed to update leave date');
+    }
+  };
+
+  const handleClearLeaveDate = async () => {
+    try {
+      const response = await fetch(`/api/groups/${groupId}/members`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leaveDate: null, memberId: member.id }),
+      });
+      if (response.ok) {
+        toast.success('Leave date cleared');
+        try { onRefresh(); } catch { window.location.reload(); }
+      } else {
+        toast.error('Failed to clear leave date');
+      }
+    } catch (error) {
+      toast.error('Failed to clear leave date');
+    }
+  };
+
+  const handleUpdateJoinDate = async (date: Date | undefined) => {
+    try {
+      if (!date) return;
+      const joinedAt = date.toISOString().split('T')[0];
+      const response = await fetch(`/api/groups/${groupId}/members`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ joinedAt, memberId: member.id }),
+      });
+      if (response.ok) {
+        toast.success('Joining date updated');
+        try { onRefresh(); } catch { window.location.reload(); }
+      } else {
+        toast.error('Failed to update joining date');
+      }
+    } catch (error) {
+      toast.error('Failed to update joining date');
+    }
+  };
+
+  const handleResetPassword = async () => {
+    try {
+      const response = await fetch(`/api/groups/${groupId}/members`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset', userId: (member as any).user_id || member.id }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        // show link to owner so they can share
+        toast.success('Password reset link generated');
+        // copy link if present
+        if (data.link) {
+          try { await navigator.clipboard.writeText(data.link); toast('Link copied to clipboard'); } catch {}
+        }
+      } else {
+        toast.error(data.error || 'Failed to generate reset link');
+      }
+    } catch (error) {
+      toast.error('Failed to generate reset link');
     }
   };
 
@@ -240,14 +474,36 @@ function MemberCard({ member, items, allMembers }: { member: Member; items: Item
                   {member.leave_date && isValid(new Date(member.leave_date)) ? format(new Date(member.leave_date), "PPP") : "Set Leave Date"}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-auto p-0">
-                <Calendar 
-                  mode="single" 
-                  selected={member.leave_date ? new Date(member.leave_date) : undefined} 
-                  onSelect={handleUpdateLeaveDate} 
-                  disabled={(date) => date < new Date(member.joined_at)} 
-                  initialFocus 
-                />
+              <PopoverContent className="w-auto p-4">
+                <div className="space-y-3">
+                  <div>
+                    <div className="text-sm font-medium mb-2">Set Leave Date</div>
+                    <Calendar 
+                      mode="single" 
+                      required={false}
+                      selected={member.leave_date ? new Date(member.leave_date) : undefined} 
+                      onSelect={handleUpdateLeaveDate} 
+                      disabled={(date) => date < new Date(member.joined_at)} 
+                      initialFocus 
+                    />
+                    <div className="mt-2 flex gap-2">
+                      {member.leave_date && (
+                        <Button variant="outline" size="sm" onClick={handleClearLeaveDate}>Clear Leave Date</Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-medium mb-2">Edit Joining Date</div>
+                    <Calendar
+                      mode="single"
+                      required={true}
+                      selected={member.joined_at ? new Date(member.joined_at) : undefined}
+                      onSelect={handleUpdateJoinDate}
+                      initialFocus={false}
+                    />
+                  </div>
+                </div>
               </PopoverContent>
             </Popover>
             {member.leave_date && (
@@ -281,6 +537,11 @@ function MemberCard({ member, items, allMembers }: { member: Member; items: Item
                 </PopoverContent>
               </Popover>
             )}
+              {isOwner && (
+                <Button variant="outline" className="w-full mt-2" onClick={handleResetPassword}>
+                  Reset Password
+                </Button>
+              )}
           </div>
         </CardContent>
       </Card>
@@ -305,10 +566,10 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     try {
       const response = await fetch(`/api/groups/${groupId}`);
       if (response.ok) {
-        const data = await response.json();
+        const data = (await response.json()) as { group?: any } | any;
         setGroupData(data.group);
-        setMembers(data.group.members || []);
-        setItems(data.group.items || []);
+        setMembers(data.group?.members || []);
+        setItems(data.group?.items || []);
       } else {
         toast.error('Failed to load group data');
       }
@@ -468,8 +729,22 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-1 space-y-6">
           <Card className="overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between">
+              <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Members</CardTitle>
+              {groupData?.currentUserRole === 'owner' && (
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button size="sm"><UserPlus className="mr-2 h-4 w-4" /> Add Member</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Member</DialogTitle>
+                      <DialogDescription>Invite a member to this group and generate a signup link.</DialogDescription>
+                    </DialogHeader>
+                    <AddMemberForm onSuccess={(link) => { navigator.clipboard?.writeText(link).catch(()=>{}); toast.success('Invite link copied to clipboard'); fetchGroupData(); }} groupId={groupId} />
+                  </DialogContent>
+                </Dialog>
+              )}
             </CardHeader>
             <CardContent className="space-y-4">
               <AnimatePresence>
@@ -480,6 +755,9 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                       member={member} 
                       items={items} 
                       allMembers={members} 
+                      isOwner={groupData?.currentUserRole === 'owner'}
+                      groupId={groupId}
+                      onRefresh={fetchGroupData}
                     />
                   ))
                 ) : (
@@ -590,3 +868,5 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     </div>
   );
 }
+
+export default GroupHomePage;

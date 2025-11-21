@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAuth } from '@/lib/auth';
 import { dbHelpers } from '@/lib/database';
+import { normalizeIncomingItemPayload } from '@/lib/item-utils';
 
 const createItemSchema = z.object({
   name: z.string().min(2, 'Item name must be at least 2 characters'),
   price: z.number().positive('Price must be positive'),
   purchaseDate: z.string().min(1, 'Purchase date is required'),
-  depreciationYears: z.number().int().min(1, 'Must be at least 1 year'),
+  depreciationDays: z.number().int().min(1, 'Must be at least 1 day'),
+  periodType: z.enum(['days', 'years']).default('days'),
 });
 
 export async function POST(
@@ -27,15 +29,26 @@ export async function POST(
       );
     }
 
-    const body = await request.json();
-    const { name, price, purchaseDate, depreciationYears } = createItemSchema.parse(body);
+    const raw = await request.json();
+    const parsedRaw = normalizeIncomingItemPayload(raw);
 
+    // Validate required fields using existing schema
+    const parsed = createItemSchema.parse({
+      name: parsedRaw.name,
+      price: parsedRaw.price,
+      purchaseDate: parsedRaw.purchaseDate,
+      depreciationDays: parsedRaw.depreciationDays,
+      periodType: parsedRaw.periodType,
+    });
+
+    // pass the normalized value + period type to db helper (it will compute years/days as appropriate)
     const result = dbHelpers.createItem(
       groupId,
-      name,
-      price,
-      purchaseDate,
-      depreciationYears,
+      parsed.name,
+      parsed.price,
+      parsed.purchaseDate,
+      parsed.depreciationDays,
+      parsed.periodType,
       session.userId as number
     );
 
@@ -43,17 +56,19 @@ export async function POST(
       success: true,
       item: {
         id: result.lastInsertRowid,
-        name,
-        price,
-        purchaseDate,
-        depreciationYears,
+        name: parsed.name,
+        price: parsed.price,
+        purchaseDate: parsed.purchaseDate,
+        // return canonical keys for clarity
+        period_days: parsed.depreciationDays,
+        period_type: parsed.periodType,
         groupId,
       },
     });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { error: 'Validation failed', details: error.errors },
+        { error: 'Validation failed', details: error.issues },
         { status: 400 }
       );
     }
