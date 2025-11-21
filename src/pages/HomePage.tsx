@@ -84,7 +84,7 @@ function ItemForm({ setOpen, existingItem }: { setOpen: (open: boolean) => void;
   const { addItem, editItem } = useAppActions();
   const form = useForm<ItemFormValues>({
     resolver: zodResolver(itemSchema) as any,
-    defaultValues: existingItem ? { 
+    defaultValues: existingItem ? {
       ...existingItem,
       depreciationDays: existingItem.depreciationDays || (existingItem.depreciationYears ? Math.max(1, Math.round(existingItem.depreciationYears * 365)) : 365)
     } : {
@@ -191,9 +191,9 @@ function MemberCard({ member }: { member: Member }) {
                           </div>
                         );
                       })}
-                       {items.filter(item => item.purchaseDate < member.leaveDate!).length === 0 && (
-                         <p className="text-sm text-muted-foreground text-center py-2">No items were purchased before the leave date.</p>
-                       )}
+                      {items.filter(item => item.purchaseDate < member.leaveDate!).length === 0 && (
+                        <p className="text-sm text-muted-foreground text-center py-2">No items were purchased before the leave date.</p>
+                      )}
                     </div>
                   </div>
                 </PopoverContent>
@@ -237,9 +237,9 @@ export function HomePage() {
           <p className="text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto mt-4">Manage shared items and calculate refunds for leaving members with ease.</p>
         </header>
         <div className="grid gap-4 md:grid-cols-3 mb-8">
-            <StatCard title="Total Members" value={members.length} icon={<Users className="h-4 w-4" />} />
-            <StatCard title="Total Items" value={items.length} icon={<Package className="h-4 w-4" />} />
-            <StatCard title="Total Asset Value" value={formatCurrency(totalItemValue)} icon={<DollarSign className="h-4 w-4" />} />
+          <StatCard title="Total Members" value={members.length} icon={<Users className="h-4 w-4" />} />
+          <StatCard title="Total Items" value={items.length} icon={<Package className="h-4 w-4" />} />
+          <StatCard title="Total Asset Value" value={formatCurrency(totalItemValue)} icon={<DollarSign className="h-4 w-4" />} />
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-1 space-y-6">
@@ -256,7 +256,7 @@ export function HomePage() {
                   {members.length > 0 ? (
                     members.map(member => <MemberCard key={member.id} member={member} />)
                   ) : (
-                    <EmptyState 
+                    <EmptyState
                       title="No Members Yet"
                       description="Add a member to get started with calculations."
                       icon={<Users className="h-8 w-8" />}
@@ -331,28 +331,28 @@ export function HomePage() {
           </div>
         </div>
         {(members.length > 0 || items.length > 0) && (
-            <div className="mt-12 flex justify-center">
-                <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                        <Button variant="destructive" size="sm"><RotateCw className="mr-2 h-4 w-4" /> Reset All Data</Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                        <AlertDialogHeader>
-                            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                            <AlertDialogDescription>
-                                This action cannot be undone. This will permanently delete all members and items from local storage.
-                            </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction onClick={handleReset}>Continue</AlertDialogAction>
-                        </AlertDialogFooter>
-                    </AlertDialogContent>
-                </AlertDialog>
-            </div>
+          <div className="mt-12 flex justify-center">
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm"><RotateCw className="mr-2 h-4 w-4" /> Reset All Data</Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This action cannot be undone. This will permanently delete all members and items from local storage.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleReset}>Continue</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         )}
         <footer className="text-center text-slate-500 dark:text-slate-400 text-sm pt-16">
-          <p>Built with ❤️ at Cloudflare</p>
+          <p>Built with ❤️ by Sajid Anam Ifti</p>
         </footer>
       </main>
       <Toaster richColors position="top-right" />

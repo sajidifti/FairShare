@@ -106,6 +106,9 @@ export const useAppActions = () => useAppStore((state) => state.actions);
 export const calculateRefundForItem = (leavingMember: Member, item: Item, allMembers: Member[]): number => {
   if (!leavingMember.leaveDate || leavingMember.leaveDate <= item.purchaseDate) return 0;
 
+  // If the member joined after purchase date, they don't pay anything (not present at purchase)
+  if (leavingMember.joiningDate > item.purchaseDate) return 0;
+
   // Depreciation period in days: prefer explicit days, otherwise convert years -> days
   const depreciationDays = Math.max(1, Math.round((item.depreciationDays ?? (item.depreciationYears ? item.depreciationYears * 365 : 365))));
 
@@ -115,8 +118,11 @@ export const calculateRefundForItem = (leavingMember: Member, item: Item, allMem
   // If leave after depreciation end, no refund
   if (leavingMember.leaveDate >= depreciationEnd) return 0;
 
+  // Filter members who were present at purchase time (joined on or before purchase date)
+  const membersAtPurchase = allMembers.filter(m => m.joiningDate <= purchaseDate);
+
   // The member only pays for days they were present during the depreciation window
-  const startDate = leavingMember.joiningDate > purchaseDate ? leavingMember.joiningDate : purchaseDate;
+  const startDate = purchaseDate; // Member was present at purchase, so start from purchase date
   const endDate = leavingMember.leaveDate < depreciationEnd ? leavingMember.leaveDate : depreciationEnd;
   if (endDate < startDate) return 0;
 
@@ -129,11 +135,14 @@ export const calculateRefundForItem = (leavingMember: Member, item: Item, allMem
   const last = normalize(endDate);
 
   while (cursor.getTime() <= last.getTime()) {
-    const presentCount = allMembers.filter(m => {
+    // Count members (from those present at purchase) who are still present on this day
+    const presentCount = membersAtPurchase.filter(m => {
       const jm = m.joiningDate;
       const lm = m.leaveDate;
       const day = cursor;
+      // Member must have joined by this day (already filtered by membersAtPurchase)
       if (jm.getTime() > day.getTime()) return false;
+      // Member must not have left before this day
       if (lm && lm.getTime() < day.getTime()) return false;
       return true;
     }).length;

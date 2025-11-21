@@ -64,8 +64,11 @@ function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]
   const memberJoinDate = new Date(member.joined_at);
   const memberLeaveDate = new Date(member.leave_date);
 
+  // If the member joined after purchase date, they don't pay anything (not present at purchase)
+  if (memberJoinDate > purchaseDate) return 0;
+
   // If the member left on or before purchase date, they pay nothing
-  if (memberLeaveDate < purchaseDate) return 0;
+  if (memberLeaveDate <= purchaseDate) return 0;
 
   // Depreciation period in days (linear). Prefer explicit depreciation_days if present, otherwise convert years -> days.
   const depreciationDays = Math.max(1, Math.round((item.depreciation_days ?? (item.depreciation_years ? item.depreciation_years * 365 : 365))));
@@ -74,11 +77,18 @@ function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]
   const depreciationEnd = new Date(purchaseDate.getTime());
   depreciationEnd.setDate(depreciationEnd.getDate() + (depreciationDays - 1));
 
+  // If member left after depreciation ends, they used the item for its full depreciation period
   // The member only pays for days they were present during the depreciation window
-  const startDate = memberJoinDate > purchaseDate ? memberJoinDate : purchaseDate;
+  const startDate = purchaseDate; // Member was present at purchase, so start from purchase date
   const endDate = memberLeaveDate < depreciationEnd ? memberLeaveDate : depreciationEnd;
 
   if (endDate < startDate) return 0;
+
+  // Filter members who were present at purchase time (joined on or before purchase date)
+  const membersAtPurchase = allMembers.filter(m => {
+    const joinDate = new Date(m.joined_at);
+    return joinDate <= purchaseDate;
+  });
 
   // Per-day cost of the item over its depreciation period
   const perDayValue = item.price / depreciationDays;
@@ -93,12 +103,14 @@ function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]
   const last = normalize(endDate);
 
   while (cursor.getTime() <= last.getTime()) {
-    // Count members present on this day (joined_on <= day && (no leave_date || leave_date >= day))
-    const presentCount = allMembers.filter(m => {
+    // Count members (from those present at purchase) who are still present on this day
+    const presentCount = membersAtPurchase.filter(m => {
       const jm = new Date(m.joined_at);
       const lm = m.leave_date ? new Date(m.leave_date) : null;
       const day = cursor;
+      // Member must have joined by this day (already filtered by membersAtPurchase)
       if (jm.getTime() > day.getTime()) return false;
+      // Member must not have left before this day
       if (lm && lm.getTime() < day.getTime()) return false;
       return true;
     }).length;
@@ -113,12 +125,51 @@ function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]
   return total;
 }
 
-function calculateTotalRefundForMember(member: Member, items: Item[], allMembers: Member[]): number {
-  return items.reduce((total, item) => total + calculateRefundForItem(member, item, allMembers), 0);
+function calculateItemBreakdown(member: Member, item: Item, allMembers: Member[]): { usage: number; totalPaid: number; refundable: number } | null {
+  // If member has no leave date, they haven't left — no breakdown
+  if (!member.leave_date) return null;
+
+  const purchaseDate = new Date(item.purchase_date);
+  const memberJoinDate = new Date(member.joined_at);
+  const memberLeaveDate = new Date(member.leave_date);
+
+  // If the member joined after purchase date, they don't pay anything (not present at purchase)
+  if (memberJoinDate > purchaseDate) return null;
+
+  // If the member left on or before purchase date, they pay nothing
+  if (memberLeaveDate <= purchaseDate) return null;
+
+  // Filter members who were present at purchase time (joined on or before purchase date)
+  const membersAtPurchase = allMembers.filter(m => {
+    const joinDate = new Date(m.joined_at);
+    return joinDate <= purchaseDate;
+  });
+
+  // Total paid = equal share among members present at purchase
+  const totalPaid = item.price / membersAtPurchase.length;
+
+  // Usage = what they actually used (calculated the same way as refund but represents cost)
+  const usage = calculateRefundForItem(member, item, allMembers);
+
+  // Refundable = what they paid minus what they used
+  const refundable = totalPaid - usage;
+
+  return { usage, totalPaid, refundable };
 }
 
-function ItemForm({ setOpen, existingItem, groupId, onSuccess }: { 
-  setOpen: (open: boolean) => void; 
+
+
+function calculateTotalRefundForMember(member: Member, items: Item[], allMembers: Member[]): number {
+  return items.reduce((total, item) => {
+    const breakdown = calculateItemBreakdown(member, item, allMembers);
+    if (!breakdown) return total;
+    return total + breakdown.refundable;
+  }, 0);
+}
+
+
+function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
+  setOpen: (open: boolean) => void;
   existingItem?: Item;
   groupId: number;
   onSuccess: () => void;
@@ -186,12 +237,12 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
 
   async function onSubmit(values: ItemFormValues) {
     try {
-      const url = existingItem 
+      const url = existingItem
         ? `/api/groups/${groupId}/items/${existingItem.id}`
         : `/api/groups/${groupId}/items`;
-      
+
       const method = existingItem ? 'PUT' : 'POST';
-      
+
       const response = await fetch(url, {
         method,
         headers: {
@@ -208,14 +259,14 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
         }),
       });
 
-  const data = (await response.json()) as { error?: string } | any;
+      const data = (await response.json()) as { error?: string } | any;
 
       if (response.ok) {
         toast.success(`Item "${values.name}" ${existingItem ? 'updated' : 'added'}.`);
         form.reset();
         setOpen(false);
         // Trigger parent refresh (reload items) if provided
-        try { onSuccess(); } catch (e) {}
+        try { onSuccess(); } catch (e) { }
       } else {
         toast.error(data.error || 'Failed to save item');
       }
@@ -246,21 +297,21 @@ function ItemForm({ setOpen, existingItem, groupId, onSuccess }: {
           </FormItem>
         )} />
         <FormField control={form.control} name="purchaseDate" render={({ field }) => (
-          <FormItem className="flex flex-col">
+          <FormItem>
             <FormLabel>Purchase Date</FormLabel>
-            <Popover>
-              <PopoverTrigger asChild>
-                <FormControl>
-                  <Button variant={"outline"} className={cn("w-full justify-start text-left font-normal", !field.value && "text-muted-foreground")}>
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {field.value ? format(field.value, "PPP") : <span>Pick a date</span>}
-                  </Button>
-                </FormControl>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0">
-                <Calendar mode="single" selected={field.value} onSelect={field.onChange} disabled={(date) => date > new Date()} initialFocus />
-              </PopoverContent>
-            </Popover>
+            <FormControl>
+              <Input
+                type="date"
+                value={field.value ? new Date(field.value).toISOString().split('T')[0] : ''}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value) {
+                    field.onChange(new Date(value));
+                  }
+                }}
+                max={new Date().toISOString().split('T')[0]}
+              />
+            </FormControl>
             <FormMessage />
           </FormItem>
         )} />
@@ -368,16 +419,16 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
   const handleUpdateLeaveDate = async (leaveDate: Date | undefined) => {
     try {
       const dateToSend = leaveDate ? leaveDate.toISOString().split('T')[0] : null;
-        const response = await fetch(`/api/groups/${groupId}/members`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            leaveDate: dateToSend,
-            memberId: member.id,
-          }),
-        });
+      const response = await fetch(`/api/groups/${groupId}/members`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leaveDate: dateToSend,
+          memberId: member.id,
+        }),
+      });
 
       if (response.ok) {
         toast.success('Leave date updated');
@@ -442,7 +493,7 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
         toast.success('Password reset link generated');
         // copy link if present
         if (data.link) {
-          try { await navigator.clipboard.writeText(data.link); toast('Link copied to clipboard'); } catch {}
+          try { await navigator.clipboard.writeText(data.link); toast('Link copied to clipboard'); } catch { }
         }
       } else {
         toast.error(data.error || 'Failed to generate reset link');
@@ -467,45 +518,41 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
           <div className="text-2xl font-bold text-blue-500">{formatCurrency(totalRefund)}</div>
           <p className="text-xs text-muted-foreground">Total Refundable Amount</p>
           <div className="mt-4 space-y-2">
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="w-full justify-start text-left font-normal">
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {member.leave_date && isValid(new Date(member.leave_date)) ? format(new Date(member.leave_date), "PPP") : "Set Leave Date"}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-4">
-                <div className="space-y-3">
-                  <div>
-                    <div className="text-sm font-medium mb-2">Set Leave Date</div>
-                    <Calendar 
-                      mode="single" 
-                      required={false}
-                      selected={member.leave_date ? new Date(member.leave_date) : undefined} 
-                      onSelect={handleUpdateLeaveDate} 
-                      disabled={(date) => date < new Date(member.joined_at)} 
-                      initialFocus 
-                    />
-                    <div className="mt-2 flex gap-2">
-                      {member.leave_date && (
-                        <Button variant="outline" size="sm" onClick={handleClearLeaveDate}>Clear Leave Date</Button>
-                      )}
-                    </div>
-                  </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Leave Date</label>
+              <div className="flex gap-2">
+                <Input
+                  type="date"
+                  value={member.leave_date ? new Date(member.leave_date).toISOString().split('T')[0] : ''}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value) {
+                      handleUpdateLeaveDate(new Date(value));
+                    }
+                  }}
+                  min={new Date(member.joined_at).toISOString().split('T')[0]}
+                  className="flex-1"
+                />
+                {member.leave_date && (
+                  <Button variant="outline" size="sm" onClick={handleClearLeaveDate}>Clear</Button>
+                )}
+              </div>
+            </div>
 
-                  <div>
-                    <div className="text-sm font-medium mb-2">Edit Joining Date</div>
-                    <Calendar
-                      mode="single"
-                      required={true}
-                      selected={member.joined_at ? new Date(member.joined_at) : undefined}
-                      onSelect={handleUpdateJoinDate}
-                      initialFocus={false}
-                    />
-                  </div>
-                </div>
-              </PopoverContent>
-            </Popover>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Joining Date</label>
+              <Input
+                type="date"
+                value={member.joined_at ? new Date(member.joined_at).toISOString().split('T')[0] : ''}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (value) {
+                    handleUpdateJoinDate(new Date(value));
+                  }
+                }}
+                className="w-full"
+              />
+            </div>
             {member.leave_date && (
               <Popover>
                 <PopoverTrigger asChild>
@@ -513,22 +560,37 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
                     <Info className="mr-2 h-4 w-4" /> View Breakdown
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-80">
+                <PopoverContent className="w-96">
                   <div className="grid gap-4">
                     <div className="space-y-2">
-                      <h4 className="font-medium leading-none">Refund Breakdown</h4>
+                      <h4 className="font-medium leading-none">Cost Breakdown</h4>
                       <p className="text-sm text-muted-foreground">Calculation for {member.name}</p>
                     </div>
-                    <div className="grid gap-2 max-h-60 overflow-y-auto pr-2">
+                    <div className="grid gap-3 max-h-96 overflow-y-auto pr-2">
                       {items.filter(item => new Date(item.purchase_date) < new Date(member.leave_date!)).map(item => {
-                        const refund = calculateRefundForItem(member, item, allMembers);
+                        const breakdown = calculateItemBreakdown(member, item, allMembers);
+                        if (!breakdown) return null;
+
                         return (
-                          <div key={item.id} className="grid grid-cols-[1fr_auto] items-center gap-4 text-sm">
-                            <span className="truncate">{item.name}</span>
-                            <span className="font-mono">{formatCurrency(refund)}</span>
+                          <div key={item.id} className="border rounded-lg p-3 space-y-2">
+                            <div className="font-medium text-sm">{item.name}</div>
+                            <div className="space-y-1 text-xs">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Total Paid (Equal Share):</span>
+                                <span className="font-mono font-medium">{formatCurrency(breakdown.totalPaid)}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Usage (Days Used):</span>
+                                <span className="font-mono text-orange-600 dark:text-orange-400">-{formatCurrency(breakdown.usage)}</span>
+                              </div>
+                              <div className="border-t pt-1 mt-1 flex justify-between font-medium">
+                                <span>Refundable:</span>
+                                <span className="font-mono text-green-600 dark:text-green-400">{formatCurrency(breakdown.refundable)}</span>
+                              </div>
+                            </div>
                           </div>
                         );
-                      })}
+                      }).filter(Boolean)}
                       {items.filter(item => new Date(item.purchase_date) < new Date(member.leave_date!)).length === 0 && (
                         <p className="text-sm text-muted-foreground text-center py-2">No items were purchased before the leave date.</p>
                       )}
@@ -537,11 +599,11 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
                 </PopoverContent>
               </Popover>
             )}
-              {isOwner && (
-                <Button variant="outline" className="w-full mt-2" onClick={handleResetPassword}>
-                  Reset Password
-                </Button>
-              )}
+            {isOwner && (
+              <Button variant="outline" className="w-full mt-2" onClick={handleResetPassword}>
+                Reset Password
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -611,7 +673,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
 
   const handleCopyInviteCode = async () => {
     if (!groupData?.invite_code) return;
-    
+
     try {
       await navigator.clipboard.writeText(groupData.invite_code);
       setCopied(true);
@@ -648,7 +710,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     <div className="container mx-auto px-4 py-12 md:py-16">
       <div className="absolute inset-0 -z-10 h-full w-full bg-white dark:bg-slate-950 bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] bg-[size:14px_24px]"></div>
       <ThemeToggle className="absolute top-6 right-6" />
-      
+
       {/* Invite Code Section */}
       {groupData?.invite_code && (
         <Card className="mb-8 border-2 border-primary/20 bg-primary/5">
@@ -729,7 +791,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-1 space-y-6">
           <Card className="overflow-hidden">
-              <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Members</CardTitle>
               {groupData?.currentUserRole === 'owner' && (
                 <Dialog>
@@ -741,7 +803,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                       <DialogTitle>Add Member</DialogTitle>
                       <DialogDescription>Invite a member to this group and generate a signup link.</DialogDescription>
                     </DialogHeader>
-                    <AddMemberForm onSuccess={(link) => { navigator.clipboard?.writeText(link).catch(()=>{}); toast.success('Invite link copied to clipboard'); fetchGroupData(); }} groupId={groupId} />
+                    <AddMemberForm onSuccess={(link) => { navigator.clipboard?.writeText(link).catch(() => { }); toast.success('Invite link copied to clipboard'); fetchGroupData(); }} groupId={groupId} />
                   </DialogContent>
                 </Dialog>
               )}
@@ -750,11 +812,11 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
               <AnimatePresence>
                 {members.length > 0 ? (
                   members.map(member => (
-                    <MemberCard 
-                      key={member.id} 
-                      member={member} 
-                      items={items} 
-                      allMembers={members} 
+                    <MemberCard
+                      key={member.id}
+                      member={member}
+                      items={items}
+                      allMembers={members}
                       isOwner={groupData?.currentUserRole === 'owner'}
                       groupId={groupId}
                       onRefresh={fetchGroupData}
@@ -770,7 +832,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
             </CardContent>
           </Card>
         </div>
-        
+
         <div className="lg:col-span-2 space-y-6">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
@@ -788,8 +850,8 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                       {editingItem ? 'Update the details of this item.' : 'Add a new item shared by the members.'}
                     </DialogDescription>
                   </DialogHeader>
-                  <ItemForm 
-                    setOpen={setItemModalOpen} 
+                  <ItemForm
+                    setOpen={setItemModalOpen}
                     existingItem={editingItem}
                     groupId={groupId}
                     onSuccess={fetchGroupData}
@@ -812,12 +874,12 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                   <TableBody>
                     <AnimatePresence>
                       {items.map(item => (
-                        <motion.tr 
-                          key={item.id} 
-                          layout 
-                          initial={{ opacity: 0 }} 
-                          animate={{ opacity: 1 }} 
-                          exit={{ opacity: 0, x: -20 }} 
+                        <motion.tr
+                          key={item.id}
+                          layout
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0, x: -20 }}
                           transition={{ duration: 0.2 }}
                         >
                           <TableCell className="font-medium">{item.name}</TableCell>
@@ -827,18 +889,18 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                           </TableCell>
                           <TableCell>{item.created_by_name}</TableCell>
                           <TableCell className="text-right space-x-1">
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-8 w-8" 
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
                               onClick={() => handleEditClick(item)}
                             >
                               <Edit className="h-4 w-4 text-blue-500" />
                             </Button>
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              className="h-8 w-8" 
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
                               onClick={() => handleDeleteItem(item.id)}
                             >
                               <Trash2 className="h-4 w-4 text-red-500" />
@@ -860,9 +922,9 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
           </Card>
         </div>
       </div>
-      
+
       <footer className="text-center text-slate-500 dark:text-slate-400 text-sm pt-16">
-        <p>Built with ❤️ at Cloudflare</p>
+        <p>Built with ❤️ by Sajid Anam Ifti</p>
       </footer>
       <Toaster richColors position="top-right" />
     </div>

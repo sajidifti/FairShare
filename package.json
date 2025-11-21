@@ -9,6 +9,7 @@
     "lint": "eslint --cache -f json --quiet .",
     "init-db": "node scripts/init-db.cjs",
     "reset-db": "node scripts/reset-db.cjs",
+    "seed-db": "node scripts/seed-db.cjs",
     "test": "vitest",
     "start": "next start",
     "deploy": "bun run build && wrangler deploy",
