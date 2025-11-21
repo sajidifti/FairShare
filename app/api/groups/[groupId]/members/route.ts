@@ -6,9 +6,11 @@ import crypto from 'crypto';
 import { hashPassword } from '@/lib/auth';
 
 const updateMemberSchema = z.object({
-  leaveDate: z.string().nullable(),
+  leaveDate: z.string().nullable().optional(),
   joinedAt: z.string().optional(),
   memberId: z.number().optional(),
+  name: z.string().optional(),
+  email: z.string().email().optional(),
 });
 
 export async function GET(
@@ -132,13 +134,14 @@ export async function PATCH(
     }
 
     const body = await request.json();
-  const { leaveDate, memberId, joinedAt } = updateMemberSchema.parse(body);
+  const { leaveDate, memberId, joinedAt, name, email } = updateMemberSchema.parse(body);
 
     // Determine which group_member to update. By default a user can update their own leave date.
     let targetGroupMemberId = membership.id;
+    let targetUserId = session.userId as number;
 
     if (memberId !== undefined && memberId !== null) {
-      // Only owners can update another member's leave date
+      // Only owners can update another member's data
       const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
       if (role !== 'owner') {
         return NextResponse.json({ error: 'Only group owner can update other members' }, { status: 403 });
@@ -152,11 +155,36 @@ export async function PATCH(
       }
 
       targetGroupMemberId = memberId;
+      targetUserId = found.user_id;
     }
 
     // Update member leave date and/or joined_at
     const resultLeave = leaveDate !== undefined ? dbHelpers.updateMemberLeaveDate(targetGroupMemberId, leaveDate) : null;
     const resultJoined = joinedAt !== undefined ? dbHelpers.updateMemberJoinedAt(targetGroupMemberId, joinedAt) : null;
+    
+    // Update user name and/or email (owner only)
+    let resultName = null;
+    let resultEmail = null;
+    
+    if (name !== undefined || email !== undefined) {
+      const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
+      if (role !== 'owner') {
+        return NextResponse.json({ error: 'Only group owner can update member info' }, { status: 403 });
+      }
+      
+      // Check if email is already taken by another user
+      if (email !== undefined) {
+        const existingUser = dbHelpers.getUserByEmail(email);
+        if (existingUser && existingUser.id !== targetUserId) {
+          return NextResponse.json({ error: 'Email already in use' }, { status: 400 });
+        }
+        resultEmail = dbHelpers.updateUserEmail(targetUserId, email);
+      }
+      
+      if (name !== undefined) {
+        resultName = dbHelpers.updateUserName(targetUserId, name);
+      }
+    }
 
     return NextResponse.json({
       success: true,
@@ -164,6 +192,8 @@ export async function PATCH(
         id: targetGroupMemberId,
         leaveDate: leaveDate === undefined ? undefined : leaveDate,
         joinedAt: joinedAt === undefined ? undefined : joinedAt,
+        name: name === undefined ? undefined : name,
+        email: email === undefined ? undefined : email,
       },
     });
   } catch (error) {

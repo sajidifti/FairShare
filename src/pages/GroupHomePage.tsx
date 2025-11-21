@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { format, isValid } from 'date-fns';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Calendar as CalendarIcon, PlusCircle, UserPlus, Trash2, Edit, Info, RotateCw, Users, Package, DollarSign, Copy, Check } from 'lucide-react';
+import { Calendar as CalendarIcon, PlusCircle, UserPlus, Trash2, Edit, Info, RotateCw, Users, Package, DollarSign, Copy, Check, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -16,6 +16,7 @@ import { Calendar } from '@/components/ui/calendar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { cn, formatCurrency } from '@/lib/utils';
@@ -413,6 +414,487 @@ function AddMemberForm({ groupId, onSuccess }: { groupId: number; onSuccess: (li
   );
 }
 
+function GroupSettings({ groupId, groupData, members, items, allMembers, onRefresh }: {
+  groupId: number;
+  groupData: any;
+  members: Member[];
+  items: Item[];
+  allMembers: Member[];
+  onRefresh: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyInviteCode = async () => {
+    if (!groupData?.invite_code) return;
+
+    try {
+      await navigator.clipboard.writeText(groupData.invite_code);
+      setCopied(true);
+      toast.success('Invite code copied to clipboard!');
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = groupData.invite_code;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setCopied(true);
+      toast.success('Invite code copied to clipboard!');
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Settings className="mr-2 h-4 w-4" />
+          Group Settings
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Group Settings</DialogTitle>
+          <DialogDescription>
+            Manage members and invites for {groupData?.name}
+          </DialogDescription>
+        </DialogHeader>
+
+        <Tabs defaultValue="members" className="w-full">
+          <TabsList className="grid w-full grid-cols-2">
+            <TabsTrigger value="members">Members</TabsTrigger>
+            <TabsTrigger value="invites">Invites</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="members" className="space-y-4 mt-4">
+            <div className="flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-semibold">Group Members</h3>
+                <p className="text-sm text-muted-foreground">Manage member access and dates</p>
+              </div>
+              {groupData?.currentUserRole === 'owner' && (
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button size="sm">
+                      <UserPlus className="mr-2 h-4 w-4" /> Add Member
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Member</DialogTitle>
+                      <DialogDescription>Invite a member to this group and generate a signup link.</DialogDescription>
+                    </DialogHeader>
+                    <AddMemberForm
+                      onSuccess={(link) => {
+                        navigator.clipboard?.writeText(link).catch(() => { });
+                        toast.success('Invite link copied to clipboard');
+                        onRefresh();
+                      }}
+                      groupId={groupId}
+                    />
+                  </DialogContent>
+                </Dialog>
+              )}
+            </div>
+
+            <div className="grid gap-3 mt-4">
+              {members.length > 0 ? (
+                members.map(member => {
+                  const handleUpdateLeaveDate = async (leaveDate: Date | undefined) => {
+                    try {
+                      const dateToSend = leaveDate ? leaveDate.toISOString().split('T')[0] : null;
+                      const response = await fetch(`/api/groups/${groupId}/members`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ leaveDate: dateToSend, memberId: member.id }),
+                      });
+                      if (response.ok) {
+                        toast.success('Leave date updated');
+                        onRefresh();
+                      } else {
+                        toast.error('Failed to update leave date');
+                      }
+                    } catch (error) {
+                      toast.error('Failed to update leave date');
+                    }
+                  };
+
+                  const handleUpdateJoinDate = async (joinDate: Date | undefined) => {
+                    if (!joinDate) return;
+                    try {
+                      const dateToSend = joinDate.toISOString().split('T')[0];
+                      const response = await fetch(`/api/groups/${groupId}/members`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ joinedAt: dateToSend, memberId: member.id }),
+                      });
+                      if (response.ok) {
+                        toast.success('Joining date updated');
+                        onRefresh();
+                      } else {
+                        toast.error('Failed to update joining date');
+                      }
+                    } catch (error) {
+                      toast.error('Failed to update joining date');
+                    }
+                  };
+
+                  const handleResetPassword = async () => {
+                    try {
+                      const response = await fetch(`/api/groups/${groupId}/members/reset-password`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ memberId: member.id }),
+                      });
+                      const data = await response.json();
+                      if (response.ok) {
+                        toast.success('Password reset link generated');
+                        if (data.link) {
+                          try {
+                            await navigator.clipboard.writeText(data.link);
+                            toast('Link copied to clipboard');
+                          } catch { }
+                        }
+                      } else {
+                        toast.error(data.error || 'Failed to generate reset link');
+                      }
+                    } catch (error) {
+                      toast.error('Failed to generate reset link');
+                    }
+                  };
+
+                  const handleUpdateName = async (newName: string) => {
+                    if (!newName || newName === member.name) return;
+                    try {
+                      const response = await fetch(`/api/groups/${groupId}/members`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: newName, memberId: member.id }),
+                      });
+                      if (response.ok) {
+                        toast.success('Name updated');
+                        onRefresh();
+                      } else {
+                        toast.error('Failed to update name');
+                      }
+                    } catch (error) {
+                      toast.error('Failed to update name');
+                    }
+                  };
+
+                  const handleUpdateEmail = async (newEmail: string) => {
+                    if (!newEmail || newEmail === member.email) return;
+                    try {
+                      const response = await fetch(`/api/groups/${groupId}/members`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: newEmail, memberId: member.id }),
+                      });
+                      const data = await response.json();
+                      if (response.ok) {
+                        toast.success('Email updated');
+                        onRefresh();
+                      } else {
+                        toast.error(data.error || 'Failed to update email');
+                      }
+                    } catch (error) {
+                      toast.error('Failed to update email');
+                    }
+                  };
+
+                  return (
+                    <Card key={member.id}>
+                      <CardContent className="pt-4">
+                        <div className="space-y-3">
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              {groupData?.currentUserRole === 'owner' ? (
+                                <div className="space-y-2">
+                                  <Input
+                                    defaultValue={member.name}
+                                    onBlur={(e) => handleUpdateName(e.target.value)}
+                                    className="font-semibold text-lg h-auto p-1"
+                                  />
+                                  <Input
+                                    type="email"
+                                    defaultValue={member.email}
+                                    onBlur={(e) => handleUpdateEmail(e.target.value)}
+                                    className="text-sm text-muted-foreground h-auto p-1"
+                                  />
+                                </div>
+                              ) : (
+                                <div>
+                                  <h4 className="font-semibold">{member.name}</h4>
+                                  <p className="text-sm text-muted-foreground">{member.email}</p>
+                                </div>
+                              )}
+                            </div>
+                            <span className={cn(
+                              "text-xs px-2 py-1 rounded",
+                              member.leave_date
+                                ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400"
+                                : "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400"
+                            )}>
+                              {member.leave_date ? 'Left' : 'Active'}
+                            </span>
+                          </div>
+
+                          {groupData?.currentUserRole === 'owner' && (
+                            <div className="space-y-2 pt-2 border-t">
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium">Leave Date</label>
+                                <div className="flex gap-2">
+                                  <Input
+                                    type="date"
+                                    value={member.leave_date ? new Date(member.leave_date).toISOString().split('T')[0] : ''}
+                                    onChange={(e) => {
+                                      const value = e.target.value;
+                                      if (value) {
+                                        handleUpdateLeaveDate(new Date(value));
+                                      }
+                                    }}
+                                    min={new Date(member.joined_at).toISOString().split('T')[0]}
+                                    className="flex-1"
+                                  />
+                                  {member.leave_date && (
+                                    <Button variant="outline" size="sm" onClick={() => handleUpdateLeaveDate(undefined)}>
+                                      Clear
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <label className="text-sm font-medium">Joining Date</label>
+                                <Input
+                                  type="date"
+                                  value={member.joined_at ? new Date(member.joined_at).toISOString().split('T')[0] : ''}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    if (value) {
+                                      handleUpdateJoinDate(new Date(value));
+                                    }
+                                  }}
+                                  className="w-full"
+                                />
+                              </div>
+
+                              <Button variant="outline" className="w-full" onClick={handleResetPassword}>
+                                <RotateCw className="mr-2 h-4 w-4" />
+                                Reset Password
+                              </Button>
+                            </div>
+                          )}
+
+                          {groupData?.currentUserRole !== 'owner' && (
+                            <div className="grid grid-cols-2 gap-3 text-sm pt-2 border-t">
+                              <div>
+                                <span className="text-muted-foreground">Joined:</span>
+                                <p className="font-medium">{format(new Date(member.joined_at), 'MMM d, yyyy')}</p>
+                              </div>
+                              {member.leave_date && (
+                                <div>
+                                  <span className="text-muted-foreground">Left:</span>
+                                  <p className="font-medium">{format(new Date(member.leave_date), 'MMM d, yyyy')}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
+              ) : (
+                <div className="text-center py-8">
+                  <Users className="h-8 w-8 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">No members yet</p>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="invites" className="space-y-4 mt-4">
+            <div>
+              <h3 className="text-lg font-semibold">Group Invite Code</h3>
+              <p className="text-sm text-muted-foreground">Share this code with others to invite them to join your group</p>
+            </div>
+
+            {groupData?.invite_code && (
+              <Card className="border-2 border-primary/20 bg-primary/5">
+                <CardContent className="pt-6">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 p-3 bg-background border rounded-lg">
+                        <code className="font-mono text-lg font-bold tracking-wider">
+                          {groupData.invite_code}
+                        </code>
+                      </div>
+                    </div>
+                    <Button
+                      onClick={handleCopyInviteCode}
+                      variant={copied ? "default" : "outline"}
+                      size="lg"
+                      className="min-w-[120px]"
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="mr-2 h-4 w-4" />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="mr-2 h-4 w-4" />
+                          Copy Code
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <p className="text-sm text-muted-foreground mt-3">
+                    Anyone with this code can join your group and access shared items and calculations.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function MemberSummaryCard({ member, items, allMembers }: { member: Member; items: Item[]; allMembers: Member[] }) {
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const totalRefund = calculateTotalRefundForMember(member, items, allMembers);
+
+  // Calculate total usage (what they paid for)
+  const totalUsage = items.reduce((total, item) => {
+    const breakdown = calculateItemBreakdown(member, item, allMembers);
+    if (!breakdown) return total;
+    return total + breakdown.usage;
+  }, 0);
+
+  return (
+    <>
+      <Card
+        className="cursor-pointer hover:shadow-md transition-shadow"
+        onClick={() => setShowBreakdown(true)}
+      >
+        <CardContent className="pt-6">
+          <div className="space-y-3">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="font-semibold text-lg">{member.name}</h3>
+                <p className="text-sm text-muted-foreground">{member.email}</p>
+              </div>
+              {member.leave_date && (
+                <span className="text-xs bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 px-2 py-1 rounded">
+                  Left
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-muted-foreground">Joined</p>
+                <p className="font-medium">{format(new Date(member.joined_at), 'MMM d, yyyy')}</p>
+              </div>
+              {member.leave_date && (
+                <div>
+                  <p className="text-muted-foreground">Left</p>
+                  <p className="font-medium">{format(new Date(member.leave_date), 'MMM d, yyyy')}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-2 border-t">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Usage</span>
+                <span className="font-semibold text-orange-600 dark:text-orange-400">{formatCurrency(totalUsage)}</span>
+              </div>
+              {member.leave_date && (
+                <div className="flex justify-between items-center mt-1">
+                  <span className="text-sm text-muted-foreground">Refundable</span>
+                  <span className="font-semibold text-green-600 dark:text-green-400">{formatCurrency(totalRefund)}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={showBreakdown} onOpenChange={setShowBreakdown}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Cost Breakdown - {member.name}</DialogTitle>
+            <DialogDescription>
+              Detailed breakdown of usage and refundable amounts
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Summary */}
+            <Card className="bg-muted/50">
+              <CardContent className="pt-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Total Usage</p>
+                    <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{formatCurrency(totalUsage)}</p>
+                  </div>
+                  {member.leave_date && (
+                    <div>
+                      <p className="text-sm text-muted-foreground">Total Refundable</p>
+                      <p className="text-2xl font-bold text-green-600 dark:text-green-400">{formatCurrency(totalRefund)}</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Item Breakdown */}
+            <div>
+              <h3 className="font-semibold mb-3">Item Breakdown</h3>
+              <div className="space-y-3">
+                {items.filter(item => new Date(item.purchase_date) < (member.leave_date ? new Date(member.leave_date) : new Date())).map(item => {
+                  const breakdown = calculateItemBreakdown(member, item, allMembers);
+                  if (!breakdown) return null;
+
+                  return (
+                    <Card key={item.id}>
+                      <CardContent className="pt-4">
+                        <div className="space-y-2">
+                          <div className="font-medium">{item.name}</div>
+                          <div className="space-y-1 text-sm">
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Total Paid (Equal Share):</span>
+                              <span className="font-mono font-medium">{formatCurrency(breakdown.totalPaid)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Usage (Days Used):</span>
+                              <span className="font-mono text-orange-600 dark:text-orange-400">-{formatCurrency(breakdown.usage)}</span>
+                            </div>
+                            <div className="border-t pt-1 mt-1 flex justify-between font-medium">
+                              <span>Refundable:</span>
+                              <span className="font-mono text-green-600 dark:text-green-400">{formatCurrency(breakdown.refundable)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                }).filter(Boolean)}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: { member: Member; items: Item[]; allMembers: Member[]; isOwner: boolean; groupId: number; onRefresh: () => void }) {
   const totalRefund = calculateTotalRefundForMember(member, items, allMembers);
 
@@ -711,52 +1193,21 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       <div className="absolute inset-0 -z-10 h-full w-full bg-white dark:bg-slate-950 bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] bg-[size:14px_24px]"></div>
       <ThemeToggle className="absolute top-6 right-6" />
 
-      {/* Invite Code Section */}
-      {groupData?.invite_code && (
-        <Card className="mb-8 border-2 border-primary/20 bg-primary/5">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              Group Invite Code
-            </CardTitle>
-            <CardDescription>
-              Share this code with others to invite them to join your group
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-3">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 p-3 bg-background border rounded-lg">
-                  <code className="font-mono text-lg font-bold tracking-wider">
-                    {groupData.invite_code}
-                  </code>
-                </div>
-              </div>
-              <Button
-                onClick={handleCopyInviteCode}
-                variant={copied ? "default" : "outline"}
-                size="lg"
-                className="min-w-[120px]"
-              >
-                {copied ? (
-                  <>
-                    <Check className="mr-2 h-4 w-4" />
-                    Copied!
-                  </>
-                ) : (
-                  <>
-                    <Copy className="mr-2 h-4 w-4" />
-                    Copy Code
-                  </>
-                )}
-              </Button>
-            </div>
-            <p className="text-sm text-muted-foreground mt-3">
-              Anyone with this code can join your group and access shared items and calculations.
-            </p>
-          </CardContent>
-        </Card>
-      )}
+      {/* Header with Group Settings */}
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <h1 className="text-3xl font-bold">{groupData?.name}</h1>
+          <p className="text-muted-foreground">Manage your shared items and expenses</p>
+        </div>
+        <GroupSettings
+          groupId={groupId}
+          groupData={groupData}
+          members={members}
+          items={items}
+          allMembers={members}
+          onRefresh={fetchGroupData}
+        />
+      </div>
 
       <div className="grid gap-4 md:grid-cols-3 mb-8">
         <Card>
@@ -788,140 +1239,113 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-1 space-y-6">
-          <Card className="overflow-hidden">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Members</CardTitle>
-              {groupData?.currentUserRole === 'owner' && (
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button size="sm"><UserPlus className="mr-2 h-4 w-4" /> Add Member</Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Add Member</DialogTitle>
-                      <DialogDescription>Invite a member to this group and generate a signup link.</DialogDescription>
-                    </DialogHeader>
-                    <AddMemberForm onSuccess={(link) => { navigator.clipboard?.writeText(link).catch(() => { }); toast.success('Invite link copied to clipboard'); fetchGroupData(); }} groupId={groupId} />
-                  </DialogContent>
-                </Dialog>
-              )}
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <AnimatePresence>
-                {members.length > 0 ? (
-                  members.map(member => (
-                    <MemberCard
-                      key={member.id}
-                      member={member}
-                      items={items}
-                      allMembers={members}
-                      isOwner={groupData?.currentUserRole === 'owner'}
-                      groupId={groupId}
-                      onRefresh={fetchGroupData}
-                    />
-                  ))
-                ) : (
-                  <div className="text-center py-8">
-                    <Users className="h-8 w-8 text-muted-foreground mx-auto mb-4" />
-                    <p className="text-muted-foreground">No members yet</p>
-                  </div>
-                )}
-              </AnimatePresence>
-            </CardContent>
-          </Card>
+      {/* Member Summary Section */}
+      {members.length > 0 && (
+        <div className="mb-8">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-2xl font-bold">Members</h2>
+            <p className="text-sm text-muted-foreground">Click on a member to see detailed breakdown</p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {members.map(member => (
+              <MemberSummaryCard
+                key={member.id}
+                member={member}
+                items={items}
+                allMembers={members}
+              />
+            ))}
+          </div>
         </div>
+      )}
 
-        <div className="lg:col-span-2 space-y-6">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Shared Items</CardTitle>
-              <Dialog open={isItemModalOpen} onOpenChange={handleItemModalOpenChange}>
-                <DialogTrigger asChild>
-                  <Button size="sm">
-                    <PlusCircle className="mr-2 h-4 w-4" /> Add Item
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>{editingItem ? 'Edit Item' : 'Add New Shared Item'}</DialogTitle>
-                    <DialogDescription>
-                      {editingItem ? 'Update the details of this item.' : 'Add a new item shared by the members.'}
-                    </DialogDescription>
-                  </DialogHeader>
-                  <ItemForm
-                    setOpen={setItemModalOpen}
-                    existingItem={editingItem}
-                    groupId={groupId}
-                    onSuccess={fetchGroupData}
-                  />
-                </DialogContent>
-              </Dialog>
-            </CardHeader>
-            <CardContent>
-              {items.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Item</TableHead>
-                      <TableHead>Price</TableHead>
-                      <TableHead>Purchase Date</TableHead>
-                      <TableHead>Added by</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <AnimatePresence>
-                      {items.map(item => (
-                        <motion.tr
-                          key={item.id}
-                          layout
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0, x: -20 }}
-                          transition={{ duration: 0.2 }}
+      {/* Shared Items Section */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Shared Items</CardTitle>
+          <Dialog open={isItemModalOpen} onOpenChange={handleItemModalOpenChange}>
+            <DialogTrigger asChild>
+              <Button size="sm">
+                <PlusCircle className="mr-2 h-4 w-4" /> Add Item
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{editingItem ? 'Edit Item' : 'Add New Shared Item'}</DialogTitle>
+                <DialogDescription>
+                  {editingItem ? 'Update the details of this item.' : 'Add a new item shared by the members.'}
+                </DialogDescription>
+              </DialogHeader>
+              <ItemForm
+                setOpen={setItemModalOpen}
+                existingItem={editingItem}
+                groupId={groupId}
+                onSuccess={fetchGroupData}
+              />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {items.length > 0 ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Item</TableHead>
+                  <TableHead>Price</TableHead>
+                  <TableHead>Purchase Date</TableHead>
+                  <TableHead>Added by</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                <AnimatePresence>
+                  {items.map(item => (
+                    <motion.tr
+                      key={item.id}
+                      layout
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0, x: -20 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <TableCell className="font-medium">{item.name}</TableCell>
+                      <TableCell>{formatCurrency(item.price)}</TableCell>
+                      <TableCell>
+                        {isValid(new Date(item.purchase_date)) ? format(new Date(item.purchase_date), "PPP") : 'Invalid Date'}
+                      </TableCell>
+                      <TableCell>{item.created_by_name}</TableCell>
+                      <TableCell className="text-right space-x-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => handleEditClick(item)}
                         >
-                          <TableCell className="font-medium">{item.name}</TableCell>
-                          <TableCell>{formatCurrency(item.price)}</TableCell>
-                          <TableCell>
-                            {isValid(new Date(item.purchase_date)) ? format(new Date(item.purchase_date), "PPP") : 'Invalid Date'}
-                          </TableCell>
-                          <TableCell>{item.created_by_name}</TableCell>
-                          <TableCell className="text-right space-x-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => handleEditClick(item)}
-                            >
-                              <Edit className="h-4 w-4 text-blue-500" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => handleDeleteItem(item.id)}
-                            >
-                              <Trash2 className="h-4 w-4 text-red-500" />
-                            </Button>
-                          </TableCell>
-                        </motion.tr>
-                      ))}
-                    </AnimatePresence>
-                  </TableBody>
-                </Table>
-              ) : (
-                <div className="text-center py-8">
-                  <Package className="h-8 w-8 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground">No shared items yet</p>
-                  <p className="text-sm text-muted-foreground">Add your first shared item to get started</p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+                          <Edit className="h-4 w-4 text-blue-500" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => handleDeleteItem(item.id)}
+                        >
+                          <Trash2 className="h-4 w-4 text-red-500" />
+                        </Button>
+                      </TableCell>
+                    </motion.tr>
+                  ))}
+                </AnimatePresence>
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="text-center py-8">
+              <Package className="h-8 w-8 text-muted-foreground mx-auto mb-4" />
+              <p className="text-muted-foreground">No shared items yet</p>
+              <p className="text-sm text-muted-foreground">Add your first shared item to get started</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <footer className="text-center text-slate-500 dark:text-slate-400 text-sm pt-16">
         <p>Built with ❤️ by Sajid Anam Ifti</p>

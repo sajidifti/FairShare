@@ -210,6 +210,11 @@ export const dbHelpers = {
     return stmt.run(name, userId);
   },
 
+  updateUserEmail: (userId: number, email: string) => {
+    const stmt = db.prepare('UPDATE users SET email = ? WHERE id = ?');
+    return stmt.run(email, userId);
+  },
+
   updateMemberLeaveDate: (groupMemberId: number, leaveDate: string | null) => {
     const stmt = db.prepare(`
       INSERT INTO member_leave_dates (group_member_id, leave_date) 
