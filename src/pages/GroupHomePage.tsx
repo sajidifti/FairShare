@@ -253,27 +253,13 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
           // New member pays their share of remaining value
           const newMemberBuyIn = valueAtLaterJoin / allMembersAtThatTime.length;
           
-          // Calculate each existing member's stake in the remaining value
-          // Stake is based on what they originally invested for this item
-          // For simplicity, we calculate each member's share of the remaining value
+          // Check if current member is one of the existing members
+          const isExistingMember = existingMembersAtThatTime.some(em => em.id === member.id);
           
-          // Each existing member's stake = their initial payment for this item
-          // We need to get the ratio of this member's investment vs total existing members' investment
-          let totalExistingInvestment = 0;
-          let thisMemberInvestment = 0;
-          
-          existingMembersAtThatTime.forEach(em => {
-            const emPayment = calculateInitialPaymentForItem(em, item, allMembers);
-            totalExistingInvestment += emPayment;
-            if (em.id === member.id) {
-              thisMemberInvestment = emPayment;
-            }
-          });
-          
-          if (totalExistingInvestment > 0 && thisMemberInvestment > 0) {
-            // This member's share of the buy-in = buyIn * (thisMemberInvestment / totalExistingInvestment)
-            const ratio = thisMemberInvestment / totalExistingInvestment;
-            buyInReceived += newMemberBuyIn * ratio;
+          if (isExistingMember) {
+            // Distribute buy-in equally among existing members
+            // This ensures total buy-in received = total buy-in paid
+            buyInReceived += newMemberBuyIn / existingMembersAtThatTime.length;
           }
         }
       }
@@ -1592,6 +1578,71 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
   }
 
   const totalItemValue = items.reduce((sum, item) => sum + item.price, 0);
+
+  // Verification: Calculate aggregate totals across all members
+  const verification = (() => {
+    let totalPaid = 0;
+    let totalUsage = 0;
+    let totalBuyInPaid = 0;
+    let totalBuyInReceived = 0;
+    let totalNetBalance = 0;
+    
+    members.forEach(member => {
+      const totals = calculateMemberTotals(member, items, members);
+      totalPaid += totals.totalInitialPayment;
+      totalUsage += totals.totalUsage;
+      totalBuyInPaid += totals.totalBuyInPaid;
+      totalBuyInReceived += totals.totalBuyInReceived;
+      totalNetBalance += totals.totalRefundable;
+    });
+    
+    const expectedNetBalance = totalItemValue - totalUsage;
+    const buyInDiff = totalBuyInPaid - totalBuyInReceived;
+    const netBalanceDiff = totalNetBalance - expectedNetBalance;
+    
+    return {
+      totalPaid,
+      totalUsage,
+      totalBuyInPaid,
+      totalBuyInReceived,
+      totalNetBalance,
+      expectedNetBalance,
+      buyInDiff,
+      netBalanceDiff,
+      isBalanced: Math.abs(buyInDiff) < 0.01 && Math.abs(netBalanceDiff) < 0.01
+    };
+  })();
+  
+  // Log verification for debugging
+  console.log('=== VERIFICATION ===');
+  console.log('Total Asset Value:', totalItemValue);
+  console.log('Total Paid (all members):', verification.totalPaid);
+  console.log('Total Usage:', verification.totalUsage);
+  console.log('Total Buy-in Paid:', verification.totalBuyInPaid);
+  console.log('Total Buy-in Received:', verification.totalBuyInReceived);
+  console.log('Buy-in Difference (should be 0):', verification.buyInDiff);
+  console.log('Total Net Balance:', verification.totalNetBalance);
+  console.log('Expected Net Balance (Assets - Usage):', verification.expectedNetBalance);
+  console.log('Net Balance Difference (should be 0):', verification.netBalanceDiff);
+
+  // Per-item verification
+  console.log('=== PER-ITEM BREAKDOWN ===');
+  items.forEach(item => {
+    let itemBuyInPaid = 0;
+    let itemBuyInReceived = 0;
+    console.log(`\n--- ${item.name} ($${item.price}) ---`);
+    members.forEach(member => {
+      const balance = calculateMemberBalanceForItem(member, item, members);
+      if (balance.buyInPaid > 0 || balance.buyInReceived > 0) {
+        console.log(`  ${member.name}: paid=${balance.buyInPaid.toFixed(2)}, received=${balance.buyInReceived.toFixed(2)}`);
+      }
+      itemBuyInPaid += balance.buyInPaid;
+      itemBuyInReceived += balance.buyInReceived;
+    });
+    const diff = itemBuyInPaid - itemBuyInReceived;
+    console.log(`  TOTAL: paid=${itemBuyInPaid.toFixed(2)}, received=${itemBuyInReceived.toFixed(2)}, diff=${diff.toFixed(2)}`);
+  });
+  console.log('Is Balanced:', verification.isBalanced);
 
   return (
     <div className="container mx-auto px-4 py-12 md:py-16">
