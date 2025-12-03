@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden';
 import { LoginForm } from './LoginForm';
 import { RegisterForm } from './RegisterForm';
 
@@ -21,6 +22,9 @@ export function AuthModal({ isOpen, onClose, defaultMode = 'login' }: AuthModalP
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md">
+        <VisuallyHidden>
+          <DialogTitle>{mode === 'login' ? 'Sign In' : 'Create Account'}</DialogTitle>
+        </VisuallyHidden>
         {mode === 'login' ? (
           <LoginForm
             onSuccess={handleSuccess}

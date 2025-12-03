@@ -29,7 +29,7 @@ export async function verifyPassword(password: string, hashedPassword: string): 
 }
 
 export async function getSession() {
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   const session = cookieStore.get('session')?.value;
   if (!session) return null;
   return await decrypt(session);
@@ -39,7 +39,7 @@ export async function createSession(userId: number, email: string, name: string)
   const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
   const session = await encrypt({ userId, email, name, expires });
   
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   cookieStore.set('session', session, {
     expires,
     httpOnly: true,
@@ -50,7 +50,7 @@ export async function createSession(userId: number, email: string, name: string)
 }
 
 export async function deleteSession() {
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   cookieStore.delete('session');
 }
 

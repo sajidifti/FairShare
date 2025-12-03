@@ -5,6 +5,7 @@ export const metadata = {
 
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
+import { Toaster } from 'sonner';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -13,6 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
           {children}
         </AuthProvider>
+        <Toaster position="top-right" richColors closeButton />
       </body>
     </html>
   );
