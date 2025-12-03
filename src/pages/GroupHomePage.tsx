@@ -656,7 +656,7 @@ function AddMemberForm({ groupId, onSuccess }: { groupId: number; onSuccess: (li
   });
   type FormValues = z.infer<typeof schema>;
 
-  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { name: '', email: '', joinedAt: undefined } });
+  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: { name: '', email: '', joinedAt: '' } });
 
   const onSubmit = async (values: FormValues) => {
     try {
@@ -703,7 +703,7 @@ function AddMemberForm({ groupId, onSuccess }: { groupId: number; onSuccess: (li
           <FormItem><FormLabel>Email</FormLabel><FormControl><Input type="email" {...field} /></FormControl><FormMessage /></FormItem>
         )} />
         <FormField control={form.control} name="joinedAt" render={({ field }) => (
-          <FormItem><FormLabel>Joining Date (optional)</FormLabel><FormControl><Input type="date" {...field} /></FormControl><FormMessage /></FormItem>
+          <FormItem><FormLabel>Joining Date (optional)</FormLabel><FormControl><Input type="date" {...field} value={field.value ?? ''} /></FormControl><FormMessage /></FormItem>
         )} />
         <div className="pt-4 flex justify-end"><Button type="submit">Invite</Button></div>
       </form>
