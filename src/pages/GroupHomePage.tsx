@@ -68,115 +68,308 @@ const itemSchema = z.object({
 
 type ItemFormValues = z.infer<typeof itemSchema>;
 
-function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]): number {
-  // If member has no leave date, they haven't left — assume no refund due yet
-  if (!member.leave_date) return 0;
+// Utility: Normalize date to local midnight
+const normalizeDate = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const ONE_DAY_MS = 1000 * 60 * 60 * 24;
 
+// Get depreciation days for an item
+function getDepreciationDays(item: Item): number {
+  return Math.max(1, Math.round((item.depreciation_days ?? (item.depreciation_years ? item.depreciation_years * 365 : 365))));
+}
+
+// Get depreciation end date for an item
+function getDepreciationEndDate(item: Item): Date {
   const purchaseDate = new Date(item.purchase_date);
-  const memberJoinDate = new Date(member.joined_at);
-  const memberLeaveDate = new Date(member.leave_date);
-
-  // If the member joined after purchase date, they don't pay anything (not present at purchase)
-  if (memberJoinDate > purchaseDate) return 0;
-
-  // If the member left on or before purchase date, they pay nothing
-  if (memberLeaveDate <= purchaseDate) return 0;
-
-  // Depreciation period in days (linear). Prefer explicit depreciation_days if present, otherwise convert years -> days.
-  const depreciationDays = Math.max(1, Math.round((item.depreciation_days ?? (item.depreciation_years ? item.depreciation_years * 365 : 365))));
-
-  // Depreciation end date (inclusive)
+  const depreciationDays = getDepreciationDays(item);
   const depreciationEnd = new Date(purchaseDate.getTime());
   depreciationEnd.setDate(depreciationEnd.getDate() + (depreciationDays - 1));
+  return depreciationEnd;
+}
 
-  // If member left after depreciation ends, they used the item for its full depreciation period
-  // The member only pays for days they were present during the depreciation window
-  const startDate = purchaseDate; // Member was present at purchase, so start from purchase date
-  const endDate = memberLeaveDate < depreciationEnd ? memberLeaveDate : depreciationEnd;
+// Calculate remaining depreciated value of an item at a specific date
+function getDepreciatedValueAtDate(item: Item, atDate: Date): number {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const checkDate = normalizeDate(atDate);
+  const depreciationDays = getDepreciationDays(item);
+  
+  // If check date is before purchase, full value remains
+  if (checkDate < purchaseDate) return item.price;
+  
+  // Days elapsed since purchase
+  const daysElapsed = Math.floor((checkDate.getTime() - purchaseDate.getTime()) / ONE_DAY_MS);
+  
+  // If fully depreciated, value is 0
+  if (daysElapsed >= depreciationDays) return 0;
+  
+  // Linear depreciation: remaining value
+  const remainingDays = depreciationDays - daysElapsed;
+  return (item.price / depreciationDays) * remainingDays;
+}
 
-  if (endDate < startDate) return 0;
+// Check if a member is present on a specific day
+function isMemberPresentOnDay(member: Member, day: Date): boolean {
+  const joinDate = normalizeDate(new Date(member.joined_at));
+  const checkDay = normalizeDate(day);
+  const leaveDate = member.leave_date ? normalizeDate(new Date(member.leave_date)) : null;
+  
+  // Must have joined by this day
+  if (joinDate > checkDay) return false;
+  // Must not have left before this day
+  if (leaveDate && leaveDate < checkDay) return false;
+  return true;
+}
 
-  // Filter members who were present at purchase time (joined on or before purchase date)
-  const membersAtPurchase = allMembers.filter(m => {
-    const joinDate = new Date(m.joined_at);
-    return joinDate <= purchaseDate;
-  });
+// Get all members present on a specific day
+function getMembersPresentOnDay(members: Member[], day: Date): Member[] {
+  return members.filter(m => isMemberPresentOnDay(m, day));
+}
 
-  // Per-day cost of the item over its depreciation period
+// Calculate buy-in amount for a member who joined after item purchase
+// Returns the amount they need to pay to existing members for their share of remaining value
+function calculateBuyInForItem(member: Member, item: Item, allMembers: Member[]): number {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  
+  // Only applies if member joined after purchase
+  if (memberJoinDate <= purchaseDate) return 0;
+  
+  // Get depreciated value at the time member joined
+  const valueAtJoin = getDepreciatedValueAtDate(item, memberJoinDate);
+  if (valueAtJoin <= 0) return 0; // Item fully depreciated before member joined
+  
+  // Count members present at the moment the new member joins (including the new member)
+  const membersAtJoin = getMembersPresentOnDay(allMembers, memberJoinDate);
+  if (membersAtJoin.length === 0) return 0;
+  
+  // New member's share of the remaining value
+  return valueAtJoin / membersAtJoin.length;
+}
+
+// Calculate daily usage cost for a member for an item
+// This handles both original purchasers and late joiners
+function calculateUsageForItem(member: Member, item: Item, allMembers: Member[], endDate?: Date): number {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+  const depreciationDays = getDepreciationDays(item);
   const perDayValue = item.price / depreciationDays;
-
-  // Iterate each day in [startDate, endDate] (inclusive) and allocate per-day cost
-  let total = 0;
-  const oneDayMs = 1000 * 60 * 60 * 24;
-
-  // Normalize dates to local midnight for iteration
-  const normalize = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  let cursor = normalize(startDate);
-  const last = normalize(endDate);
-
-  while (cursor.getTime() <= last.getTime()) {
-    // Count members (from those present at purchase) who are still present on this day
-    const presentCount = membersAtPurchase.filter(m => {
-      const jm = new Date(m.joined_at);
-      const lm = m.leave_date ? new Date(m.leave_date) : null;
-      const day = cursor;
-      // Member must have joined by this day (already filtered by membersAtPurchase)
-      if (jm.getTime() > day.getTime()) return false;
-      // Member must not have left before this day
-      if (lm && lm.getTime() < day.getTime()) return false;
-      return true;
-    }).length;
-
-    if (presentCount > 0) {
-      total += perDayValue / presentCount;
-    }
-
-    cursor = new Date(cursor.getTime() + oneDayMs);
+  
+  // Member's effective start date for this item
+  const startDate = memberJoinDate > purchaseDate ? memberJoinDate : purchaseDate;
+  
+  // End date for calculation (either leave date, provided end date, depreciation end, or today)
+  const today = normalizeDate(new Date());
+  let calcEndDate = depreciationEnd < today ? depreciationEnd : today;
+  if (member.leave_date) {
+    const leaveDate = normalizeDate(new Date(member.leave_date));
+    if (leaveDate < calcEndDate) calcEndDate = leaveDate;
   }
-
+  if (endDate) {
+    const ed = normalizeDate(endDate);
+    if (ed < calcEndDate) calcEndDate = ed;
+  }
+  
+  // If member's start is after calculation end, no usage
+  if (startDate > calcEndDate) return 0;
+  if (startDate > depreciationEnd) return 0;
+  
+  // Iterate each day and calculate member's share
+  let total = 0;
+  let cursor = new Date(startDate.getTime());
+  const last = calcEndDate < depreciationEnd ? calcEndDate : depreciationEnd;
+  
+  while (cursor.getTime() <= last.getTime()) {
+    const presentMembers = getMembersPresentOnDay(allMembers, cursor);
+    if (presentMembers.length > 0) {
+      total += perDayValue / presentMembers.length;
+    }
+    cursor = new Date(cursor.getTime() + ONE_DAY_MS);
+  }
+  
   return total;
 }
 
-function calculateItemBreakdown(member: Member, item: Item, allMembers: Member[]): { usage: number; totalPaid: number; refundable: number } | null {
-  // If member has no leave date, they haven't left — no breakdown
-  if (!member.leave_date) return null;
-
-  const purchaseDate = new Date(item.purchase_date);
-  const memberJoinDate = new Date(member.joined_at);
-  const memberLeaveDate = new Date(member.leave_date);
-
-  // If the member joined after purchase date, they don't pay anything (not present at purchase)
-  if (memberJoinDate > purchaseDate) return null;
-
-  // If the member left on or before purchase date, they pay nothing
-  if (memberLeaveDate <= purchaseDate) return null;
-
-  // Filter members who were present at purchase time (joined on or before purchase date)
-  const membersAtPurchase = allMembers.filter(m => {
-    const joinDate = new Date(m.joined_at);
-    return joinDate <= purchaseDate;
-  });
-
-  // Total paid = equal share among members present at purchase
-  const totalPaid = item.price / membersAtPurchase.length;
-
-  // Usage = what they actually used (calculated the same way as refund but represents cost)
-  const usage = calculateRefundForItem(member, item, allMembers);
-
-  // Refundable = what they paid minus what they used
-  const refundable = totalPaid - usage;
-
-  return { usage, totalPaid, refundable };
+// Calculate what a member originally paid for an item (or bought in for)
+function calculateInitialPaymentForItem(member: Member, item: Item, allMembers: Member[]): number {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  
+  if (memberJoinDate <= purchaseDate) {
+    // Original purchaser: paid equal share at purchase time
+    const membersAtPurchase = allMembers.filter(m => {
+      const joinDate = normalizeDate(new Date(m.joined_at));
+      return joinDate <= purchaseDate;
+    });
+    return item.price / membersAtPurchase.length;
+  } else {
+    // Late joiner: pays buy-in amount
+    return calculateBuyInForItem(member, item, allMembers);
+  }
 }
 
+// Calculate what each member owes to or receives from others for an item
+interface MemberBalance {
+  memberId: number;
+  memberName: string;
+  initialPayment: number;  // What they paid upfront (purchase share or buy-in)
+  usage: number;           // Their actual usage cost
+  buyInPaid: number;       // Amount paid to buy into past items
+  buyInReceived: number;   // Amount received from new members
+  netBalance: number;      // Positive = owed money, Negative = owes money
+}
 
+function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: Member[]): MemberBalance {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  const isOriginalPurchaser = memberJoinDate <= purchaseDate;
+  
+  const initialPayment = calculateInitialPaymentForItem(member, item, allMembers);
+  const usage = calculateUsageForItem(member, item, allMembers);
+  const buyInPaid = isOriginalPurchaser ? 0 : calculateBuyInForItem(member, item, allMembers);
+  
+  // Calculate buy-in received from members who joined after this member and during item depreciation
+  let buyInReceived = 0;
+  if (isOriginalPurchaser || memberJoinDate <= purchaseDate) {
+    // Check for members who joined after purchase but while this member was present
+    const depreciationEnd = getDepreciationEndDate(item);
+    allMembers.forEach(laterMember => {
+      const laterJoinDate = normalizeDate(new Date(laterMember.joined_at));
+      // Later member joined after purchase and within depreciation period
+      if (laterJoinDate > purchaseDate && laterJoinDate <= depreciationEnd) {
+        // Check if current member was present when later member joined
+        if (isMemberPresentOnDay(member, laterJoinDate)) {
+          const valueAtLaterJoin = getDepreciatedValueAtDate(item, laterJoinDate);
+          const membersWhenLaterJoined = getMembersPresentOnDay(allMembers, laterJoinDate);
+          // Members who were there BEFORE the new member joined get compensation
+          const existingMembers = membersWhenLaterJoined.filter(m => {
+            const mJoin = normalizeDate(new Date(m.joined_at));
+            return mJoin < laterJoinDate;
+          });
+          if (existingMembers.length > 0 && existingMembers.some(m => m.id === member.id)) {
+            // This member receives a portion of the buy-in
+            const buyInFromLater = valueAtLaterJoin / membersWhenLaterJoined.length;
+            buyInReceived += buyInFromLater / existingMembers.length * existingMembers.length / membersWhenLaterJoined.length;
+          }
+        }
+      }
+    });
+  }
+  
+  // Recalculate buy-in received properly:
+  // When a new member joins, they pay (depreciated value / total members including themselves)
+  // This amount is distributed to existing members proportionally
+  buyInReceived = 0;
+  const depreciationEnd = getDepreciationEndDate(item);
+  allMembers.forEach(laterMember => {
+    if (laterMember.id === member.id) return;
+    const laterJoinDate = normalizeDate(new Date(laterMember.joined_at));
+    if (laterJoinDate > purchaseDate && laterJoinDate <= depreciationEnd) {
+      // Was current member present when later member joined?
+      if (isMemberPresentOnDay(member, laterJoinDate)) {
+        const valueAtLaterJoin = getDepreciatedValueAtDate(item, laterJoinDate);
+        const allMembersAtThatTime = getMembersPresentOnDay(allMembers, laterJoinDate);
+        const existingMembersAtThatTime = allMembersAtThatTime.filter(m => {
+          const mJoin = normalizeDate(new Date(m.joined_at));
+          return mJoin < laterJoinDate;
+        });
+        if (existingMembersAtThatTime.length > 0) {
+          // New member pays their share
+          const newMemberShare = valueAtLaterJoin / allMembersAtThatTime.length;
+          // This is distributed among existing members
+          buyInReceived += newMemberShare / existingMembersAtThatTime.length;
+        }
+      }
+    }
+  });
+  
+  // Net balance: what they paid - what they used + what they received
+  // Positive means they're owed money (used less than paid)
+  // Negative means they owe money (used more than paid, though this shouldn't happen)
+  const netBalance = initialPayment - usage + buyInReceived - buyInPaid;
+  
+  return {
+    memberId: member.id,
+    memberName: member.name,
+    initialPayment,
+    usage,
+    buyInPaid,
+    buyInReceived,
+    netBalance,
+  };
+}
+
+// Full breakdown for a member across all items
+interface ItemBreakdown {
+  item: Item;
+  initialPayment: number;
+  usage: number;
+  buyInPaid: number;
+  buyInReceived: number;
+  refundable: number;
+  isLateJoiner: boolean;
+}
+
+function calculateItemBreakdown(member: Member, item: Item, allMembers: Member[]): ItemBreakdown | null {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  const memberLeaveDate = member.leave_date ? normalizeDate(new Date(member.leave_date)) : null;
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+  
+  // If member left before or on purchase date, they have no involvement
+  if (memberLeaveDate && memberLeaveDate <= purchaseDate) return null;
+  
+  // If member joined after depreciation ended, they have no involvement
+  if (memberJoinDate > depreciationEnd) return null;
+  
+  const isLateJoiner = memberJoinDate > purchaseDate;
+  const balance = calculateMemberBalanceForItem(member, item, allMembers);
+  
+  return {
+    item,
+    initialPayment: balance.initialPayment,
+    usage: balance.usage,
+    buyInPaid: balance.buyInPaid,
+    buyInReceived: balance.buyInReceived,
+    refundable: balance.netBalance,
+    isLateJoiner,
+  };
+}
+
+// Calculate total across all items for a member
+interface MemberTotals {
+  totalInitialPayment: number;
+  totalUsage: number;
+  totalBuyInPaid: number;
+  totalBuyInReceived: number;
+  totalRefundable: number;
+}
+
+function calculateMemberTotals(member: Member, items: Item[], allMembers: Member[]): MemberTotals {
+  const totals: MemberTotals = {
+    totalInitialPayment: 0,
+    totalUsage: 0,
+    totalBuyInPaid: 0,
+    totalBuyInReceived: 0,
+    totalRefundable: 0,
+  };
+  
+  items.forEach(item => {
+    const breakdown = calculateItemBreakdown(member, item, allMembers);
+    if (breakdown) {
+      totals.totalInitialPayment += breakdown.initialPayment;
+      totals.totalUsage += breakdown.usage;
+      totals.totalBuyInPaid += breakdown.buyInPaid;
+      totals.totalBuyInReceived += breakdown.buyInReceived;
+      totals.totalRefundable += breakdown.refundable;
+    }
+  });
+  
+  return totals;
+}
 
 function calculateTotalRefundForMember(member: Member, items: Item[], allMembers: Member[]): number {
-  return items.reduce((total, item) => {
-    const breakdown = calculateItemBreakdown(member, item, allMembers);
-    if (!breakdown) return total;
-    return total + breakdown.refundable;
-  }, 0);
+  const totals = calculateMemberTotals(member, items, allMembers);
+  return totals.totalRefundable;
 }
 
 
@@ -899,14 +1092,7 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
 
 function MemberSummaryCard({ member, items, allMembers }: { member: Member; items: Item[]; allMembers: Member[] }) {
   const [showBreakdown, setShowBreakdown] = useState(false);
-  const totalRefund = calculateTotalRefundForMember(member, items, allMembers);
-
-  // Calculate total usage (what they paid for)
-  const totalUsage = items.reduce((total, item) => {
-    const breakdown = calculateItemBreakdown(member, item, allMembers);
-    if (!breakdown) return total;
-    return total + breakdown.usage;
-  }, 0);
+  const totals = calculateMemberTotals(member, items, allMembers);
 
   return (
     <>
@@ -941,17 +1127,32 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
               )}
             </div>
 
-            <div className="pt-2 border-t">
+            <div className="pt-2 border-t space-y-1">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Paid / Buy-in</span>
+                <span className="font-semibold">{formatCurrency(totals.totalInitialPayment)}</span>
+              </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm text-muted-foreground">Usage</span>
-                <span className="font-semibold text-orange-600 dark:text-orange-400">{formatCurrency(totalUsage)}</span>
+                <span className="font-semibold text-orange-600 dark:text-orange-400">{formatCurrency(totals.totalUsage)}</span>
               </div>
-              {member.leave_date && (
-                <div className="flex justify-between items-center mt-1">
-                  <span className="text-sm text-muted-foreground">Refundable</span>
-                  <span className="font-semibold text-green-600 dark:text-green-400">{formatCurrency(totalRefund)}</span>
+              {totals.totalBuyInReceived > 0 && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">From New Members</span>
+                  <span className="font-semibold text-blue-600 dark:text-blue-400">+{formatCurrency(totals.totalBuyInReceived)}</span>
                 </div>
               )}
+              <div className="flex justify-between items-center pt-1 border-t">
+                <span className="text-sm font-medium">
+                  {member.leave_date ? (totals.totalRefundable >= 0 ? 'Refundable' : 'Owes') : 'Net Balance'}
+                </span>
+                <span className={cn(
+                  "font-bold",
+                  totals.totalRefundable >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                )}>
+                  {totals.totalRefundable >= 0 ? '+' : ''}{formatCurrency(Math.abs(totals.totalRefundable))}
+                </span>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -962,7 +1163,7 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
           <DialogHeader>
             <DialogTitle>Cost Breakdown - {member.name}</DialogTitle>
             <DialogDescription>
-              Detailed breakdown of usage and refundable amounts
+              Detailed breakdown of payments, usage, and balance
             </DialogDescription>
           </DialogHeader>
 
@@ -970,17 +1171,32 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
             {/* Summary */}
             <Card className="bg-muted/50">
               <CardContent className="pt-6">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Total Paid</p>
+                    <p className="text-xl font-bold">{formatCurrency(totals.totalInitialPayment)}</p>
+                  </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Total Usage</p>
-                    <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{formatCurrency(totalUsage)}</p>
+                    <p className="text-xl font-bold text-orange-600 dark:text-orange-400">{formatCurrency(totals.totalUsage)}</p>
                   </div>
-                  {member.leave_date && (
+                  {totals.totalBuyInReceived > 0 && (
                     <div>
-                      <p className="text-sm text-muted-foreground">Total Refundable</p>
-                      <p className="text-2xl font-bold text-green-600 dark:text-green-400">{formatCurrency(totalRefund)}</p>
+                      <p className="text-sm text-muted-foreground">From New Members</p>
+                      <p className="text-xl font-bold text-blue-600 dark:text-blue-400">+{formatCurrency(totals.totalBuyInReceived)}</p>
                     </div>
                   )}
+                  <div>
+                    <p className="text-sm text-muted-foreground">
+                      {member.leave_date ? (totals.totalRefundable >= 0 ? 'Refundable' : 'Owes') : 'Net Balance'}
+                    </p>
+                    <p className={cn(
+                      "text-xl font-bold",
+                      totals.totalRefundable >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                    )}>
+                      {totals.totalRefundable >= 0 ? '+' : ''}{formatCurrency(Math.abs(totals.totalRefundable))}
+                    </p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -989,7 +1205,7 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
             <div>
               <h3 className="font-semibold mb-3">Item Breakdown</h3>
               <div className="space-y-3">
-                {items.filter(item => new Date(item.purchase_date) < (member.leave_date ? new Date(member.leave_date) : new Date())).map(item => {
+                {items.map(item => {
                   const breakdown = calculateItemBreakdown(member, item, allMembers);
                   if (!breakdown) return null;
 
@@ -997,19 +1213,39 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
                     <Card key={item.id}>
                       <CardContent className="pt-4">
                         <div className="space-y-2">
-                          <div className="font-medium">{item.name}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{breakdown.item.name}</span>
+                            {breakdown.isLateJoiner && (
+                              <span className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-2 py-0.5 rounded">
+                                Joined Late
+                              </span>
+                            )}
+                          </div>
                           <div className="space-y-1 text-sm">
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Total Paid (Equal Share):</span>
-                              <span className="font-mono font-medium">{formatCurrency(breakdown.totalPaid)}</span>
+                              <span className="text-muted-foreground">
+                                {breakdown.isLateJoiner ? 'Buy-in Amount:' : 'Initial Share:'}
+                              </span>
+                              <span className="font-mono font-medium">{formatCurrency(breakdown.initialPayment)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground">Usage (Days Used):</span>
+                              <span className="text-muted-foreground">Usage Cost:</span>
                               <span className="font-mono text-orange-600 dark:text-orange-400">-{formatCurrency(breakdown.usage)}</span>
                             </div>
+                            {breakdown.buyInReceived > 0 && (
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Received from New Members:</span>
+                                <span className="font-mono text-green-600 dark:text-green-400">+{formatCurrency(breakdown.buyInReceived)}</span>
+                              </div>
+                            )}
                             <div className="border-t pt-1 mt-1 flex justify-between font-medium">
-                              <span>Refundable:</span>
-                              <span className="font-mono text-green-600 dark:text-green-400">{formatCurrency(breakdown.refundable)}</span>
+                              <span>{member.leave_date ? (breakdown.refundable >= 0 ? 'Refundable:' : 'Owes:') : 'Net Balance:'}</span>
+                              <span className={cn(
+                                "font-mono",
+                                breakdown.refundable >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                              )}>
+                                {breakdown.refundable >= 0 ? '+' : ''}{formatCurrency(Math.abs(breakdown.refundable))}
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -1027,7 +1263,7 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
 }
 
 function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: { member: Member; items: Item[]; allMembers: Member[]; isOwner: boolean; groupId: number; onRefresh: () => void }) {
-  const totalRefund = calculateTotalRefundForMember(member, items, allMembers);
+  const totals = calculateMemberTotals(member, items, allMembers);
 
   const handleUpdateLeaveDate = async (leaveDate: Date | undefined) => {
     try {
@@ -1128,8 +1364,15 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
           </div>
         </CardHeader>
         <CardContent>
-          <div className="text-2xl font-bold text-blue-500">{formatCurrency(totalRefund)}</div>
-          <p className="text-xs text-muted-foreground">Total Refundable Amount</p>
+          <div className={cn(
+            "text-2xl font-bold",
+            totals.totalRefundable >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+          )}>
+            {totals.totalRefundable >= 0 ? '+' : ''}{formatCurrency(Math.abs(totals.totalRefundable))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {member.leave_date ? (totals.totalRefundable >= 0 ? 'Refundable Amount' : 'Amount Owed') : 'Net Balance'}
+          </p>
           <div className="mt-4 space-y-2">
             <div className="space-y-2">
               <label className="text-sm font-medium">Leave Date</label>
@@ -1180,32 +1423,52 @@ function MemberCard({ member, items, allMembers, isOwner, groupId, onRefresh }: 
                       <p className="text-sm text-muted-foreground">Calculation for {member.name}</p>
                     </div>
                     <div className="grid gap-3 max-h-96 overflow-y-auto pr-2">
-                      {items.filter(item => new Date(item.purchase_date) < new Date(member.leave_date!)).map(item => {
+                      {items.map(item => {
                         const breakdown = calculateItemBreakdown(member, item, allMembers);
                         if (!breakdown) return null;
 
                         return (
                           <div key={item.id} className="border rounded-lg p-3 space-y-2">
-                            <div className="font-medium text-sm">{item.name}</div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-sm">{breakdown.item.name}</span>
+                              {breakdown.isLateJoiner && (
+                                <span className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-1.5 py-0.5 rounded">
+                                  Late
+                                </span>
+                              )}
+                            </div>
                             <div className="space-y-1 text-xs">
                               <div className="flex justify-between">
-                                <span className="text-muted-foreground">Total Paid (Equal Share):</span>
-                                <span className="font-mono font-medium">{formatCurrency(breakdown.totalPaid)}</span>
+                                <span className="text-muted-foreground">
+                                  {breakdown.isLateJoiner ? 'Buy-in:' : 'Initial Share:'}
+                                </span>
+                                <span className="font-mono font-medium">{formatCurrency(breakdown.initialPayment)}</span>
                               </div>
                               <div className="flex justify-between">
-                                <span className="text-muted-foreground">Usage (Days Used):</span>
+                                <span className="text-muted-foreground">Usage:</span>
                                 <span className="font-mono text-orange-600 dark:text-orange-400">-{formatCurrency(breakdown.usage)}</span>
                               </div>
+                              {breakdown.buyInReceived > 0 && (
+                                <div className="flex justify-between">
+                                  <span className="text-muted-foreground">From New Members:</span>
+                                  <span className="font-mono text-green-600 dark:text-green-400">+{formatCurrency(breakdown.buyInReceived)}</span>
+                                </div>
+                              )}
                               <div className="border-t pt-1 mt-1 flex justify-between font-medium">
-                                <span>Refundable:</span>
-                                <span className="font-mono text-green-600 dark:text-green-400">{formatCurrency(breakdown.refundable)}</span>
+                                <span>{member.leave_date ? (breakdown.refundable >= 0 ? 'Refundable:' : 'Owes:') : 'Balance:'}</span>
+                                <span className={cn(
+                                  "font-mono",
+                                  breakdown.refundable >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
+                                )}>
+                                  {breakdown.refundable >= 0 ? '+' : ''}{formatCurrency(Math.abs(breakdown.refundable))}
+                                </span>
                               </div>
                             </div>
                           </div>
                         );
                       }).filter(Boolean)}
-                      {items.filter(item => new Date(item.purchase_date) < new Date(member.leave_date!)).length === 0 && (
-                        <p className="text-sm text-muted-foreground text-center py-2">No items were purchased before the leave date.</p>
+                      {items.every(item => !calculateItemBreakdown(member, item, allMembers)) && (
+                        <p className="text-sm text-muted-foreground text-center py-2">No item involvement for this member.</p>
                       )}
                     </div>
                   </div>
