@@ -282,16 +282,23 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
     }
   });
   
-  // Net balance: what they paid - what they used + what they received from new members
-  // For late joiners: they paid buyInPaid (which equals initialPayment), used 'usage', and don't receive from new members typically
-  // For original purchasers: they paid initialPayment, used 'usage', and received buyInReceived from late joiners
+  // Net balance calculation:
   // 
-  // Positive means they're owed money (refundable)
-  // Negative means they owe money
+  // For ORIGINAL purchasers:
+  //   - They paid initialPayment (their share of item price at purchase)
+  //   - They received buyInReceived from later joiners (reduces their effective cost)
+  //   - Their effective investment = initialPayment - buyInReceived
+  //   - Their usage is what they consumed
+  //   - Net balance = (initialPayment - buyInReceived) - usage
   //
-  // The formula should be: initialPayment - usage + buyInReceived
-  // Note: buyInPaid is already reflected in initialPayment for late joiners, so we don't subtract it again
-  const netBalance = initialPayment - usage + buyInReceived;
+  // For LATE joiners:
+  //   - They paid buyIn (= initialPayment for them) to existing members
+  //   - They received nothing (buyInReceived = 0 typically, unless someone joined after them)
+  //   - Net balance = initialPayment - buyInReceived - usage
+  //
+  // This ensures zero-sum: money paid by late joiners goes to original members,
+  // reducing original members' effective cost.
+  const netBalance = initialPayment - buyInReceived - usage;
   
   return {
     memberId: member.id,
