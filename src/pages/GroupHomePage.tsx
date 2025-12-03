@@ -227,56 +227,54 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
   const usage = calculateUsageForItem(member, item, allMembers);
   const buyInPaid = isOriginalPurchaser ? 0 : calculateBuyInForItem(member, item, allMembers);
   
-  // Calculate buy-in received from members who joined after this member and during item depreciation
+  // Calculate buy-in received from members who joined after this member
+  // Buy-in is distributed PROPORTIONALLY based on each existing member's stake in the remaining value
   let buyInReceived = 0;
-  if (isOriginalPurchaser || memberJoinDate <= purchaseDate) {
-    // Check for members who joined after purchase but while this member was present
-    const depreciationEnd = getDepreciationEndDate(item);
-    allMembers.forEach(laterMember => {
-      const laterJoinDate = normalizeDate(new Date(laterMember.joined_at));
-      // Later member joined after purchase and within depreciation period
-      if (laterJoinDate > purchaseDate && laterJoinDate <= depreciationEnd) {
-        // Check if current member was present when later member joined
-        if (isMemberPresentOnDay(member, laterJoinDate)) {
-          const valueAtLaterJoin = getDepreciatedValueAtDate(item, laterJoinDate);
-          const membersWhenLaterJoined = getMembersPresentOnDay(allMembers, laterJoinDate);
-          // Members who were there BEFORE the new member joined get compensation
-          const existingMembers = membersWhenLaterJoined.filter(m => {
-            const mJoin = normalizeDate(new Date(m.joined_at));
-            return mJoin < laterJoinDate;
-          });
-          if (existingMembers.length > 0 && existingMembers.some(m => m.id === member.id)) {
-            // This member receives a portion of the buy-in
-            const buyInFromLater = valueAtLaterJoin / membersWhenLaterJoined.length;
-            buyInReceived += buyInFromLater / existingMembers.length * existingMembers.length / membersWhenLaterJoined.length;
-          }
-        }
-      }
-    });
-  }
-  
-  // Recalculate buy-in received properly:
-  // When a new member joins, they pay (depreciated value / total members including themselves)
-  // This amount is distributed to existing members proportionally
-  buyInReceived = 0;
   const depreciationEnd = getDepreciationEndDate(item);
+  
   allMembers.forEach(laterMember => {
     if (laterMember.id === member.id) return;
     const laterJoinDate = normalizeDate(new Date(laterMember.joined_at));
+    
+    // Only process members who joined after purchase and within depreciation period
     if (laterJoinDate > purchaseDate && laterJoinDate <= depreciationEnd) {
       // Was current member present when later member joined?
       if (isMemberPresentOnDay(member, laterJoinDate)) {
         const valueAtLaterJoin = getDepreciatedValueAtDate(item, laterJoinDate);
         const allMembersAtThatTime = getMembersPresentOnDay(allMembers, laterJoinDate);
+        
+        // Get existing members (those who were there BEFORE the new member joined)
         const existingMembersAtThatTime = allMembersAtThatTime.filter(m => {
           const mJoin = normalizeDate(new Date(m.joined_at));
           return mJoin < laterJoinDate;
         });
+        
         if (existingMembersAtThatTime.length > 0) {
-          // New member pays their share
-          const newMemberShare = valueAtLaterJoin / allMembersAtThatTime.length;
-          // This is distributed among existing members
-          buyInReceived += newMemberShare / existingMembersAtThatTime.length;
+          // New member pays their share of remaining value
+          const newMemberBuyIn = valueAtLaterJoin / allMembersAtThatTime.length;
+          
+          // Calculate each existing member's stake in the remaining value
+          // Stake is based on what they originally invested for this item
+          // For simplicity, we calculate each member's share of the remaining value
+          
+          // Each existing member's stake = their initial payment for this item
+          // We need to get the ratio of this member's investment vs total existing members' investment
+          let totalExistingInvestment = 0;
+          let thisMemberInvestment = 0;
+          
+          existingMembersAtThatTime.forEach(em => {
+            const emPayment = calculateInitialPaymentForItem(em, item, allMembers);
+            totalExistingInvestment += emPayment;
+            if (em.id === member.id) {
+              thisMemberInvestment = emPayment;
+            }
+          });
+          
+          if (totalExistingInvestment > 0 && thisMemberInvestment > 0) {
+            // This member's share of the buy-in = buyIn * (thisMemberInvestment / totalExistingInvestment)
+            const ratio = thisMemberInvestment / totalExistingInvestment;
+            buyInReceived += newMemberBuyIn * ratio;
+          }
         }
       }
     }
