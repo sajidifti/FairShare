@@ -282,10 +282,16 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
     }
   });
   
-  // Net balance: what they paid - what they used + what they received
-  // Positive means they're owed money (used less than paid)
-  // Negative means they owe money (used more than paid, though this shouldn't happen)
-  const netBalance = initialPayment - usage + buyInReceived - buyInPaid;
+  // Net balance: what they paid - what they used + what they received from new members
+  // For late joiners: they paid buyInPaid (which equals initialPayment), used 'usage', and don't receive from new members typically
+  // For original purchasers: they paid initialPayment, used 'usage', and received buyInReceived from late joiners
+  // 
+  // Positive means they're owed money (refundable)
+  // Negative means they owe money
+  //
+  // The formula should be: initialPayment - usage + buyInReceived
+  // Note: buyInPaid is already reflected in initialPayment for late joiners, so we don't subtract it again
+  const netBalance = initialPayment - usage + buyInReceived;
   
   return {
     memberId: member.id,
