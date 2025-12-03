@@ -14,11 +14,12 @@ const createItemSchema = z.object({
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { groupId: string } }
+  { params }: { params: Promise<{ groupId: string }> }
 ) {
   try {
     const session = await requireAuth();
-    const groupId = parseInt(params.groupId);
+    const { groupId: groupIdStr } = await params;
+    const groupId = parseInt(groupIdStr);
 
     // Check if user is in the group
     const membership = dbHelpers.isUserInGroup(session.userId as number, groupId);
@@ -83,11 +84,12 @@ export async function POST(
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { groupId: string } }
+  { params }: { params: Promise<{ groupId: string }> }
 ) {
   try {
     const session = await requireAuth();
-    const groupId = parseInt(params.groupId);
+    const { groupId: groupIdStr } = await params;
+    const groupId = parseInt(groupIdStr);
 
     // Check if user is in the group
     const membership = dbHelpers.isUserInGroup(session.userId as number, groupId);

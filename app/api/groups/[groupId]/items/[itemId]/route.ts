@@ -14,12 +14,13 @@ const updateItemSchema = z.object({
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { groupId: string; itemId: string } }
+  { params }: { params: Promise<{ groupId: string; itemId: string }> }
 ) {
   try {
     const session = await requireAuth();
-    const groupId = parseInt(params.groupId);
-    const itemId = parseInt(params.itemId);
+    const { groupId: groupIdStr, itemId: itemIdStr } = await params;
+    const groupId = parseInt(groupIdStr);
+    const itemId = parseInt(itemIdStr);
 
     // Check if user is in the group
     const membership = dbHelpers.isUserInGroup(session.userId as number, groupId);
@@ -81,12 +82,13 @@ export async function PUT(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { groupId: string; itemId: string } }
+  { params }: { params: Promise<{ groupId: string; itemId: string }> }
 ) {
   try {
     const session = await requireAuth();
-    const groupId = parseInt(params.groupId);
-    const itemId = parseInt(params.itemId);
+    const { groupId: groupIdStr, itemId: itemIdStr } = await params;
+    const groupId = parseInt(groupIdStr);
+    const itemId = parseInt(itemIdStr);
 
     // Check if user is in the group
     const membership = dbHelpers.isUserInGroup(session.userId as number, groupId);
