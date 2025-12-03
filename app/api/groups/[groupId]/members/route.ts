@@ -5,6 +5,24 @@ import { dbHelpers } from '@/lib/database';
 import crypto from 'crypto';
 import { hashPassword } from '@/lib/auth';
 
+// Helper to get the correct app URL, respecting reverse proxy headers
+function getAppUrl(request: NextRequest): string {
+  if (process.env.APP_URL) {
+    return process.env.APP_URL;
+  }
+  
+  // Check for forwarded headers (set by nginx/reverse proxy)
+  const forwardedHost = request.headers.get('x-forwarded-host');
+  const forwardedProto = request.headers.get('x-forwarded-proto') || 'https';
+  
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+  
+  // Fallback to request URL origin
+  return new URL(request.url).origin;
+}
+
 const updateMemberSchema = z.object({
   leaveDate: z.string().nullable().optional(),
   joinedAt: z.string().optional(),
@@ -88,8 +106,8 @@ export async function POST(
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
       dbHelpers.createUserToken(user.id, token, 'signup', expiresAt);
 
-  const appUrl = process.env.APP_URL || new URL(request.url).origin;
-  const link = `${appUrl}/auth/accept-invite?token=${token}`;
+      const appUrl = getAppUrl(request);
+      const link = `${appUrl}/auth/accept-invite?token=${token}`;
 
       return NextResponse.json({ success: true, link, email, name });
     }
@@ -106,8 +124,8 @@ export async function POST(
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
       dbHelpers.createUserToken(user.id, token, 'reset', expiresAt);
 
-  const appUrl = process.env.APP_URL || new URL(request.url).origin;
-  const link = `${appUrl}/auth/accept-invite?token=${token}`;
+      const appUrl = getAppUrl(request);
+      const link = `${appUrl}/auth/accept-invite?token=${token}`;
       return NextResponse.json({ success: true, link, userId: user.id, email: user.email });
     }
 
@@ -133,7 +151,7 @@ export async function POST(
         token = { token: newToken };
       }
 
-      const appUrl = process.env.APP_URL || new URL(request.url).origin;
+      const appUrl = getAppUrl(request);
       const link = `${appUrl}/auth/accept-invite?token=${token.token}`;
       
       return NextResponse.json({ success: true, link, userId, email: member.email });
