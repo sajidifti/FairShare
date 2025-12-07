@@ -193,6 +193,7 @@ interface MemberStake {
   stake: number; // Percentage (0-1) of remaining value
   totalPaid: number; // Total amount paid (initial + buy-ins)
   buyInReceived: number; // Amount received from new members
+  refundsPaid: number; // Amount paid to leaving members (their share of refunds)
 }
 
 // Calculate stakes and financial transactions for all members on an item
@@ -234,6 +235,7 @@ function calculateItemFinancials(item: Item, allMembers: Member[]): ItemFinancia
       stake: initialStake,
       totalPaid: initialPayment,
       buyInReceived: 0,
+      refundsPaid: 0,
     });
     memberUsage.set(m.id, 0);
   });
@@ -294,13 +296,19 @@ function calculateItemFinancials(item: Item, allMembers: Member[]): ItemFinancia
         stake: newMemberStake,
         totalPaid: buyInAmount,
         buyInReceived: 0,
+        refundsPaid: 0,
       });
       memberUsage.set(event.memberId, 0);
 
     } else if (event.type === 'LEAVE') {
       // Member leaves - their stake gets distributed to remaining active members
+      // and remaining members collectively pay the refund
       const leavingStake = memberStakes.get(event.memberId);
       if (!leavingStake || leavingStake.stake <= 0) return;
+
+      // Calculate the refund amount (stake × remaining value at leave date)
+      const valueAtLeave = getDepreciatedValueAtDate(item, event.date);
+      const refundAmount = leavingStake.stake * valueAtLeave;
 
       // Get remaining active members (excluding the leaving member, checking day AFTER leave)
       const dayAfterLeave = new Date(event.date.getTime() + ONE_DAY_MS);
@@ -324,16 +332,19 @@ function calculateItemFinancials(item: Item, allMembers: Member[]): ItemFinancia
         if (stake) totalRemainingStake += stake.stake;
       });
 
-      // Distribute leaving member's stake proportionally to remaining members
+      // Distribute leaving member's stake AND refund liability proportionally to remaining members
       remainingMembers.forEach(id => {
         const stake = memberStakes.get(id);
         if (stake && totalRemainingStake > 0) {
           const stakeRatio = stake.stake / totalRemainingStake;
+          // They inherit the leaving member's stake portion
           stake.stake += leavingStake.stake * stakeRatio;
+          // They also pay their share of the refund
+          stake.refundsPaid += refundAmount * stakeRatio;
         }
       });
 
-      // Mark leaving member's final stake as 0 (they've been refunded based on value at leave)
+      // Mark leaving member's final stake as 0 (they've been refunded)
       leavingStake.stake = 0;
     }
   });
@@ -427,6 +438,7 @@ function calculateStakesBeforeLeave(item: Item, allMembers: Member[], leavingMem
       stake: initialStake,
       totalPaid: initialPayment,
       buyInReceived: 0,
+      refundsPaid: 0,
     });
   });
 
@@ -473,6 +485,7 @@ function calculateStakesBeforeLeave(item: Item, allMembers: Member[], leavingMem
         stake: newMemberStake,
         totalPaid: buyInAmount,
         buyInReceived: 0,
+        refundsPaid: 0,
       });
 
     } else if (event.type === 'LEAVE') {
@@ -579,6 +592,7 @@ interface MemberBalance {
   usage: number;           // Their actual usage cost
   buyInPaid: number;       // Amount paid to buy into past items
   buyInReceived: number;   // Amount received from new members
+  refundsPaid: number;     // Amount paid to fund leaving members' refunds
   refundAmount: number;    // Amount refunded when leaving (based on stake)
   netBalance: number;      // Positive = owed money (refundable), Negative = owes money
 }
@@ -599,6 +613,7 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
       usage: 0,
       buyInPaid: 0,
       buyInReceived: 0,
+      refundsPaid: 0,
       refundAmount: 0,
       netBalance: 0,
     };
@@ -612,6 +627,7 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
       usage: 0,
       buyInPaid: 0,
       buyInReceived: 0,
+      refundsPaid: 0,
       refundAmount: 0,
       netBalance: 0,
     };
@@ -627,6 +643,7 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
   const usage = financials.memberUsage.get(member.id) || 0;
   const buyInPaid = isOriginalPurchaser ? 0 : (stakeInfo?.totalPaid || 0);
   const buyInReceived = stakeInfo?.buyInReceived || 0;
+  const refundsPaid = stakeInfo?.refundsPaid || 0; // Money paid to fund leaving members' refunds
 
   // Calculate refund if member has left
   let refundAmount = 0;
@@ -634,23 +651,15 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
     refundAmount = calculateRefundForItem(member, item, allMembers);
   }
 
-  // Net balance = what they paid - what they received from buy-ins - what they used + refund (if left)
-  // For active members: netBalance = initialPayment - buyInReceived - usage (refund = 0)
-  // For left members: netBalance = initialPayment - buyInReceived - usage + refundAmount
-  // But actually, refund IS the remaining value after usage, so:
-  // netBalance (for left) should equal refundAmount - (usage that happened after accounting)
-
-  // Simplified: For left members, their "balance" is what they get refunded
-  // Their contribution was: initialPayment - buyInReceived
-  // Their usage was: usage
-  // What's left of their stake value: refundAmount
-  // So netBalance = (initialPayment - buyInReceived) - usage should approximately equal the refund calculation
-  // But with the stake model, refund = stake * remaining value, which accounts for all transfers
-
-  // For display purposes, let's use:
-  // netBalance = initialPayment - buyInReceived - usage (classic calculation)
-  // refundAmount shows the stake-based refund (more accurate for leaving members)
-  const netBalance = initialPayment - buyInReceived - usage;
+  // Net balance calculation:
+  // For active members: netBalance = initialPayment - buyInReceived + refundsPaid - usage
+  //   - initialPayment: what they paid (original share or buy-in)
+  //   - buyInReceived: money received from late joiners (reduces effective investment)
+  //   - refundsPaid: money paid to fund leaving members' refunds (increases investment - they bought the stake)
+  //   - usage: value they consumed
+  //
+  // For left members: netBalance = refundAmount (what they got when they left)
+  const netBalance = initialPayment - buyInReceived + refundsPaid - usage;
 
   return {
     memberId: member.id,
@@ -659,6 +668,7 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
     usage,
     buyInPaid,
     buyInReceived,
+    refundsPaid,
     refundAmount,
     netBalance: member.leave_date ? refundAmount : netBalance,
   };
@@ -671,6 +681,7 @@ interface ItemBreakdown {
   usage: number;
   buyInPaid: number;
   buyInReceived: number;
+  refundsPaid: number;
   refundable: number;
   isLateJoiner: boolean;
 }
@@ -695,7 +706,7 @@ function calculateItemBreakdown(member: Member, item: Item, allMembers: Member[]
   const balance = calculateMemberBalanceForItem(member, item, allMembers);
 
   // For members who have left, use the stake-based refund
-  // For active members, use the net balance (paid - received - usage)
+  // For active members, use the net balance (paid - received + refundsPaid - usage)
   const refundable = balance.netBalance;
 
   return {
@@ -704,6 +715,7 @@ function calculateItemBreakdown(member: Member, item: Item, allMembers: Member[]
     usage: balance.usage,
     buyInPaid: balance.buyInPaid,
     buyInReceived: balance.buyInReceived,
+    refundsPaid: balance.refundsPaid,
     refundable,
     isLateJoiner,
   };
@@ -715,6 +727,7 @@ interface MemberTotals {
   totalUsage: number;
   totalBuyInPaid: number;
   totalBuyInReceived: number;
+  totalRefundsPaid: number;
   totalRefundable: number;
 }
 
@@ -724,6 +737,7 @@ function calculateMemberTotals(member: Member, items: Item[], allMembers: Member
     totalUsage: 0,
     totalBuyInPaid: 0,
     totalBuyInReceived: 0,
+    totalRefundsPaid: 0,
     totalRefundable: 0,
   };
 
@@ -734,6 +748,7 @@ function calculateMemberTotals(member: Member, items: Item[], allMembers: Member
       totals.totalUsage += breakdown.usage;
       totals.totalBuyInPaid += breakdown.buyInPaid;
       totals.totalBuyInReceived += breakdown.buyInReceived;
+      totals.totalRefundsPaid += breakdown.refundsPaid;
       totals.totalRefundable += breakdown.refundable;
     }
   });
@@ -1516,6 +1531,12 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
                   <span className="font-semibold text-blue-600 dark:text-blue-400">+{formatCurrency(totals.totalBuyInReceived)}</span>
                 </div>
               )}
+              {totals.totalRefundsPaid > 0 && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Paid for Refunds</span>
+                  <span className="font-semibold text-rose-600 dark:text-rose-400">-{formatCurrency(totals.totalRefundsPaid)}</span>
+                </div>
+              )}
               <div className="flex justify-between items-center pt-1 border-t">
                 <span className="text-sm font-medium">
                   {member.leave_date ? (totals.totalRefundable >= 0 ? 'Refundable' : 'Owes') : 'Net Balance'}
@@ -1558,6 +1579,12 @@ function MemberSummaryCard({ member, items, allMembers }: { member: Member; item
                     <div>
                       <p className="text-sm text-muted-foreground">From New Members</p>
                       <p className="text-xl font-bold text-blue-600 dark:text-blue-400">+{formatCurrency(totals.totalBuyInReceived)}</p>
+                    </div>
+                  )}
+                  {totals.totalRefundsPaid > 0 && (
+                    <div>
+                      <p className="text-sm text-muted-foreground">Paid for Refunds</p>
+                      <p className="text-xl font-bold text-rose-600 dark:text-rose-400">-{formatCurrency(totals.totalRefundsPaid)}</p>
                     </div>
                   )}
                   <div>
@@ -1962,7 +1989,8 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     let totalUsage = 0;
     let totalBuyInPaid = 0;
     let totalBuyInReceived = 0;
-    let totalNetBalance = 0;
+    let totalActiveNetBalance = 0;
+    let totalLeftRefunds = 0;
 
     members.forEach(member => {
       const totals = calculateMemberTotals(member, items, members);
@@ -1970,20 +1998,34 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       totalUsage += totals.totalUsage;
       totalBuyInPaid += totals.totalBuyInPaid;
       totalBuyInReceived += totals.totalBuyInReceived;
-      totalNetBalance += totals.totalRefundable;
+
+      if (member.leave_date) {
+        // Left member - their refund is what they took out of the system
+        totalLeftRefunds += totals.totalRefundable;
+      } else {
+        // Active member - their net balance is their equity
+        totalActiveNetBalance += totals.totalRefundable;
+      }
     });
 
-    const expectedNetBalance = totalItemValue - totalUsage;
+    // The correct invariant:
+    // For active members: sum of net balances = remaining asset value = assets - usage - refunds_paid_out
+    // So: totalActiveNetBalance = totalItemValue - totalUsage - totalLeftRefunds
+    // Rearranged: totalActiveNetBalance + totalLeftRefunds = totalItemValue - totalUsage
+    const expectedRemainingValue = totalItemValue - totalUsage;
+    const actualTotalBalance = totalActiveNetBalance + totalLeftRefunds;
     const buyInDiff = totalBuyInPaid - totalBuyInReceived;
-    const netBalanceDiff = totalNetBalance - expectedNetBalance;
+    const netBalanceDiff = actualTotalBalance - expectedRemainingValue;
 
     return {
       totalPaid,
       totalUsage,
       totalBuyInPaid,
       totalBuyInReceived,
-      totalNetBalance,
-      expectedNetBalance,
+      totalActiveNetBalance,
+      totalLeftRefunds,
+      totalNetBalance: actualTotalBalance,
+      expectedNetBalance: expectedRemainingValue,
       buyInDiff,
       netBalanceDiff,
       isBalanced: Math.abs(buyInDiff) < 0.01 && Math.abs(netBalanceDiff) < 0.01
@@ -1998,9 +2040,13 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
   console.log('Total Buy-in Paid:', verification.totalBuyInPaid);
   console.log('Total Buy-in Received:', verification.totalBuyInReceived);
   console.log('Buy-in Difference (should be 0):', verification.buyInDiff);
-  console.log('Total Net Balance:', verification.totalNetBalance);
-  console.log('Expected Net Balance (Assets - Usage):', verification.expectedNetBalance);
+  console.log('--- Balance Breakdown ---');
+  console.log('Active Members Net Balance:', verification.totalActiveNetBalance);
+  console.log('Left Members Refunds:', verification.totalLeftRefunds);
+  console.log('Total Net Balance (Active + Left):', verification.totalNetBalance);
+  console.log('Expected (Assets - Usage):', verification.expectedNetBalance);
   console.log('Net Balance Difference (should be 0):', verification.netBalanceDiff);
+  console.log('Is Balanced:', verification.isBalanced);
 
   // Per-item verification
   console.log('=== PER-ITEM BREAKDOWN ===');
