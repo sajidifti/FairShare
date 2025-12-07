@@ -28,6 +28,13 @@ interface AcceptInviteResponse {
     error?: string;
 }
 
+interface VerifyInviteResponse {
+    valid?: boolean;
+    email?: string;
+    name?: string;
+    error?: string;
+}
+
 function AcceptInviteContent() {
     const searchParams = useSearchParams();
     const router = useRouter();
@@ -35,6 +42,9 @@ function AcceptInviteContent() {
 
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isSuccess, setIsSuccess] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [email, setEmail] = useState<string | null>(null);
+    const [tokenError, setTokenError] = useState<string | null>(null);
 
     const form = useForm<AcceptInviteFormValues>({
         resolver: zodResolver(acceptInviteSchema),
@@ -44,6 +54,38 @@ function AcceptInviteContent() {
             confirmPassword: '',
         },
     });
+
+    // Verify token and fetch email on mount
+    useEffect(() => {
+        if (!token) {
+            setIsLoading(false);
+            return;
+        }
+
+        const verifyToken = async () => {
+            try {
+                const res = await fetch(`/api/auth/verify-invite?token=${encodeURIComponent(token)}`);
+                const data: VerifyInviteResponse = await res.json();
+
+                if (res.ok && data.valid) {
+                    setEmail(data.email || null);
+                    // Pre-fill name if available
+                    if (data.name) {
+                        form.setValue('name', data.name);
+                    }
+                } else {
+                    setTokenError(data.error || 'Invalid invite link');
+                }
+            } catch (error) {
+                console.error('Token verification error:', error);
+                setTokenError('Failed to verify invite link');
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        verifyToken();
+    }, [token, form]);
 
     const onSubmit = async (values: AcceptInviteFormValues) => {
         if (!token) {
@@ -67,11 +109,12 @@ function AcceptInviteContent() {
 
             if (res.ok && data.success) {
                 setIsSuccess(true);
-                toast.success('Account setup complete! Redirecting...');
-                // Redirect to home page after a short delay
+                toast.success('Account setup complete! Logging you in...');
+                // Refresh router to update session state then redirect
+                router.refresh();
                 setTimeout(() => {
-                    router.push('/');
-                }, 1500);
+                    window.location.href = '/';
+                }, 1000);
             } else {
                 toast.error(data.error || 'Failed to complete account setup');
             }
@@ -83,14 +126,28 @@ function AcceptInviteContent() {
         }
     };
 
-    if (!token) {
+    // Show loading state while verifying token
+    if (isLoading) {
+        return (
+            <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
+                <Card className="w-full max-w-md">
+                    <CardContent className="flex flex-col items-center justify-center py-8">
+                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                        <p className="mt-4 text-muted-foreground">Verifying invite link...</p>
+                    </CardContent>
+                </Card>
+            </div>
+        );
+    }
+
+    if (!token || tokenError) {
         return (
             <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
                 <Card className="w-full max-w-md">
                     <CardHeader className="text-center">
                         <CardTitle className="text-2xl text-destructive">Invalid Invite Link</CardTitle>
                         <CardDescription>
-                            This invite link is invalid or has expired. Please contact the group owner for a new invite.
+                            {tokenError || 'This invite link is invalid or has expired. Please contact the group owner for a new invite.'}
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="text-center">
@@ -129,6 +186,12 @@ function AcceptInviteContent() {
                     <CardDescription>
                         You've been invited to join a group. Complete your account setup below.
                     </CardDescription>
+                    {email && (
+                        <div className="mt-4 p-3 bg-muted rounded-lg">
+                            <p className="text-sm text-muted-foreground">Setting up account for:</p>
+                            <p className="font-medium">{email}</p>
+                        </div>
+                    )}
                 </CardHeader>
                 <CardContent>
                     <Form {...form}>
