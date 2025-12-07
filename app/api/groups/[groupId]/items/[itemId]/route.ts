@@ -31,18 +31,27 @@ export async function PUT(
       );
     }
 
-  const raw = await request.json();
-  const parsedRaw = normalizeIncomingItemPayload(raw);
+    // Only owners can update items
+    const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
+    if (role !== 'owner') {
+      return NextResponse.json(
+        { error: 'Only the group owner can edit items' },
+        { status: 403 }
+      );
+    }
 
-  const parsed = updateItemSchema.parse({
-    name: parsedRaw.name,
-    price: parsedRaw.price,
-    purchaseDate: parsedRaw.purchaseDate,
-    depreciationDays: parsedRaw.depreciationDays,
-    periodType: parsedRaw.periodType,
-  });
+    const raw = await request.json();
+    const parsedRaw = normalizeIncomingItemPayload(raw);
 
-  const result = dbHelpers.updateItem(itemId, parsed.name, parsed.price, parsed.purchaseDate, parsed.depreciationDays, parsed.periodType);
+    const parsed = updateItemSchema.parse({
+      name: parsedRaw.name,
+      price: parsedRaw.price,
+      purchaseDate: parsedRaw.purchaseDate,
+      depreciationDays: parsedRaw.depreciationDays,
+      periodType: parsedRaw.periodType,
+    });
+
+    const result = dbHelpers.updateItem(itemId, parsed.name, parsed.price, parsed.purchaseDate, parsed.depreciationDays, parsed.periodType);
 
     if (result.changes === 0) {
       return NextResponse.json(
@@ -95,6 +104,15 @@ export async function DELETE(
     if (!membership) {
       return NextResponse.json(
         { error: 'You are not a member of this group' },
+        { status: 403 }
+      );
+    }
+
+    // Only owners can delete items
+    const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
+    if (role !== 'owner') {
+      return NextResponse.json(
+        { error: 'Only the group owner can delete items' },
         { status: 403 }
       );
     }

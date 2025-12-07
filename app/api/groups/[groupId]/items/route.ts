@@ -30,6 +30,15 @@ export async function POST(
       );
     }
 
+    // Only owners can create items
+    const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
+    if (role !== 'owner') {
+      return NextResponse.json(
+        { error: 'Only the group owner can add items' },
+        { status: 403 }
+      );
+    }
+
     const raw = await request.json();
     const parsedRaw = normalizeIncomingItemPayload(raw);
 

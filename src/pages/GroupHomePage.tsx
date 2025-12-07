@@ -1152,26 +1152,40 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
     }
   };
 
+  const isOwner = groupData?.currentUserRole === 'owner';
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm">
-          <Settings className="mr-2 h-4 w-4" />
-          Group Settings
+          {isOwner ? (
+            <>
+              <Settings className="mr-2 h-4 w-4" />
+              Group Settings
+            </>
+          ) : (
+            <>
+              <Users className="mr-2 h-4 w-4" />
+              View Members
+            </>
+          )}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Group Settings</DialogTitle>
+          <DialogTitle>{isOwner ? 'Group Settings' : 'Group Members'}</DialogTitle>
           <DialogDescription>
-            Manage members and invites for {groupData?.name}
+            {isOwner
+              ? `Manage members and invites for ${groupData?.name}`
+              : `View members of ${groupData?.name}`
+            }
           </DialogDescription>
         </DialogHeader>
 
         <Tabs defaultValue="members" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className={isOwner ? "grid w-full grid-cols-2" : "grid w-full grid-cols-1"}>
             <TabsTrigger value="members">Members</TabsTrigger>
-            <TabsTrigger value="invites">Invites</TabsTrigger>
+            {isOwner && <TabsTrigger value="invites">Invites</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="members" className="space-y-4 mt-4">
@@ -1467,49 +1481,51 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
             </div>
           </TabsContent>
 
-          <TabsContent value="invites" className="space-y-4 mt-4">
-            <div>
-              <h3 className="text-lg font-semibold">Group Invite Code</h3>
-              <p className="text-sm text-muted-foreground">Share this code with others to invite them to join your group</p>
-            </div>
+          {isOwner && (
+            <TabsContent value="invites" className="space-y-4 mt-4">
+              <div>
+                <h3 className="text-lg font-semibold">Group Invite Code</h3>
+                <p className="text-sm text-muted-foreground">Share this code with others to invite them to join your group</p>
+              </div>
 
-            {groupData?.invite_code && (
-              <Card className="border-2 border-primary/20 bg-primary/5">
-                <CardContent className="pt-6">
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 p-3 bg-background border rounded-lg">
-                        <code className="font-mono text-lg font-bold tracking-wider">
-                          {groupData.invite_code}
-                        </code>
+              {groupData?.invite_code && (
+                <Card className="border-2 border-primary/20 bg-primary/5">
+                  <CardContent className="pt-6">
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 p-3 bg-background border rounded-lg">
+                          <code className="font-mono text-lg font-bold tracking-wider">
+                            {groupData.invite_code}
+                          </code>
+                        </div>
                       </div>
+                      <Button
+                        onClick={handleCopyInviteCode}
+                        variant={copied ? "default" : "outline"}
+                        size="lg"
+                        className="min-w-[120px]"
+                      >
+                        {copied ? (
+                          <>
+                            <Check className="mr-2 h-4 w-4" />
+                            Copied!
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="mr-2 h-4 w-4" />
+                            Copy Code
+                          </>
+                        )}
+                      </Button>
                     </div>
-                    <Button
-                      onClick={handleCopyInviteCode}
-                      variant={copied ? "default" : "outline"}
-                      size="lg"
-                      className="min-w-[120px]"
-                    >
-                      {copied ? (
-                        <>
-                          <Check className="mr-2 h-4 w-4" />
-                          Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="mr-2 h-4 w-4" />
-                          Copy Code
-                        </>
-                      )}
-                    </Button>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-3">
-                    Anyone with this code can join your group and access shared items and calculations.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
+                    <p className="text-sm text-muted-foreground mt-3">
+                      Anyone with this code can join your group and access shared items and calculations.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+          )}
         </Tabs>
       </DialogContent>
     </Dialog>
@@ -2179,27 +2195,29 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Shared Items</CardTitle>
-          <Dialog open={isItemModalOpen} onOpenChange={handleItemModalOpenChange}>
-            <DialogTrigger asChild>
-              <Button size="sm">
-                <PlusCircle className="mr-2 h-4 w-4" /> Add Item
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>{editingItem ? 'Edit Item' : 'Add New Shared Item'}</DialogTitle>
-                <DialogDescription>
-                  {editingItem ? 'Update the details of this item.' : 'Add a new item shared by the members.'}
-                </DialogDescription>
-              </DialogHeader>
-              <ItemForm
-                setOpen={setItemModalOpen}
-                existingItem={editingItem}
-                groupId={groupId}
-                onSuccess={fetchGroupData}
-              />
-            </DialogContent>
-          </Dialog>
+          {groupData?.currentUserRole === 'owner' && (
+            <Dialog open={isItemModalOpen} onOpenChange={handleItemModalOpenChange}>
+              <DialogTrigger asChild>
+                <Button size="sm">
+                  <PlusCircle className="mr-2 h-4 w-4" /> Add Item
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{editingItem ? 'Edit Item' : 'Add New Shared Item'}</DialogTitle>
+                  <DialogDescription>
+                    {editingItem ? 'Update the details of this item.' : 'Add a new item shared by the members.'}
+                  </DialogDescription>
+                </DialogHeader>
+                <ItemForm
+                  setOpen={setItemModalOpen}
+                  existingItem={editingItem}
+                  groupId={groupId}
+                  onSuccess={fetchGroupData}
+                />
+              </DialogContent>
+            </Dialog>
+          )}
         </CardHeader>
         <CardContent>
           {items.length > 0 ? (
@@ -2210,7 +2228,9 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                   <TableHead>Price</TableHead>
                   <TableHead>Purchase Date</TableHead>
                   <TableHead>Added by</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  {groupData?.currentUserRole === 'owner' && (
+                    <TableHead className="text-right">Actions</TableHead>
+                  )}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -2230,24 +2250,26 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
                         {isValid(new Date(item.purchase_date)) ? format(new Date(item.purchase_date), "PPP") : 'Invalid Date'}
                       </TableCell>
                       <TableCell>{item.created_by_name}</TableCell>
-                      <TableCell className="text-right space-x-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => handleEditClick(item)}
-                        >
-                          <Edit className="h-4 w-4 text-blue-500" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8"
-                          onClick={() => handleDeleteItem(item.id)}
-                        >
-                          <Trash2 className="h-4 w-4 text-red-500" />
-                        </Button>
-                      </TableCell>
+                      {groupData?.currentUserRole === 'owner' && (
+                        <TableCell className="text-right space-x-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleEditClick(item)}
+                          >
+                            <Edit className="h-4 w-4 text-blue-500" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => handleDeleteItem(item.id)}
+                          >
+                            <Trash2 className="h-4 w-4 text-red-500" />
+                          </Button>
+                        </TableCell>
+                      )}
                     </motion.tr>
                   ))}
                 </AnimatePresence>
