@@ -91,120 +91,484 @@ function getDepreciatedValueAtDate(item: Item, atDate: Date): number {
   const purchaseDate = normalizeDate(new Date(item.purchase_date));
   const checkDate = normalizeDate(atDate);
   const depreciationDays = getDepreciationDays(item);
-  
+
   // If check date is before purchase, full value remains
   if (checkDate < purchaseDate) return item.price;
-  
-  // Days elapsed since purchase
+
+  // Days elapsed since purchase (purchase day counts as day 0, so we add 1 for inclusive counting)
   const daysElapsed = Math.floor((checkDate.getTime() - purchaseDate.getTime()) / ONE_DAY_MS);
-  
+
   // If fully depreciated, value is 0
   if (daysElapsed >= depreciationDays) return 0;
-  
+
   // Linear depreciation: remaining value
   const remainingDays = depreciationDays - daysElapsed;
   return (item.price / depreciationDays) * remainingDays;
 }
 
-// Check if a member is present on a specific day
-function isMemberPresentOnDay(member: Member, day: Date): boolean {
+// Check if a member is active on a specific day (joined on or before, and hasn't left before that day)
+function isMemberActiveOnDay(member: Member, day: Date): boolean {
   const joinDate = normalizeDate(new Date(member.joined_at));
   const checkDay = normalizeDate(day);
   const leaveDate = member.leave_date ? normalizeDate(new Date(member.leave_date)) : null;
-  
-  // Must have joined by this day
+
+  // Must have joined on or before this day
   if (joinDate > checkDay) return false;
-  // Must not have left before this day
-  if (leaveDate && leaveDate < checkDay) return false;
+  // If they have a leave date, they are still active ON the leave date (last day)
+  // They are NOT active on days AFTER their leave date
+  if (leaveDate && checkDay > leaveDate) return false;
   return true;
 }
 
-// Get all members present on a specific day
-function getMembersPresentOnDay(members: Member[], day: Date): Member[] {
-  return members.filter(m => isMemberPresentOnDay(m, day));
+// Get all active members on a specific day
+function getActiveMembersOnDay(members: Member[], day: Date): Member[] {
+  return members.filter(m => isMemberActiveOnDay(m, day));
 }
 
-// Calculate buy-in amount for a member who joined after item purchase
-// Returns the amount they need to pay to existing members for their share of remaining value
-function calculateBuyInForItem(member: Member, item: Item, allMembers: Member[]): number {
-  const purchaseDate = normalizeDate(new Date(item.purchase_date));
-  const memberJoinDate = normalizeDate(new Date(member.joined_at));
-  
-  // Only applies if member joined after purchase
-  if (memberJoinDate <= purchaseDate) return 0;
-  
-  // Get depreciated value at the time member joined
-  const valueAtJoin = getDepreciatedValueAtDate(item, memberJoinDate);
-  if (valueAtJoin <= 0) return 0; // Item fully depreciated before member joined
-  
-  // Count members present at the moment the new member joins (including the new member)
-  const membersAtJoin = getMembersPresentOnDay(allMembers, memberJoinDate);
-  if (membersAtJoin.length === 0) return 0;
-  
-  // New member's share of the remaining value
-  return valueAtJoin / membersAtJoin.length;
+// Event types for stake tracking
+interface StakeEvent {
+  date: Date;
+  type: 'PURCHASE' | 'JOIN' | 'LEAVE';
+  memberId: number;
+  memberName: string;
 }
 
-// Calculate daily usage cost for a member for an item
-// This handles both original purchasers and late joiners
-function calculateUsageForItem(member: Member, item: Item, allMembers: Member[], endDate?: Date): number {
+// Get all events that affect stakes for an item, sorted chronologically
+function getStakeEvents(item: Item, allMembers: Member[]): StakeEvent[] {
   const purchaseDate = normalizeDate(new Date(item.purchase_date));
-  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+  const events: StakeEvent[] = [];
+
+  allMembers.forEach(member => {
+    const joinDate = normalizeDate(new Date(member.joined_at));
+    const leaveDate = member.leave_date ? normalizeDate(new Date(member.leave_date)) : null;
+
+    // If member was active on purchase date (joined on or before, and not left before purchase)
+    // they're part of initial purchase
+    if (joinDate <= purchaseDate && isMemberActiveOnDay(member, purchaseDate)) {
+      events.push({
+        date: purchaseDate,
+        type: 'PURCHASE',
+        memberId: member.id,
+        memberName: member.name,
+      });
+    }
+    // If member joined after purchase but before depreciation ends
+    else if (joinDate > purchaseDate && joinDate <= depreciationEnd) {
+      events.push({
+        date: joinDate,
+        type: 'JOIN',
+        memberId: member.id,
+        memberName: member.name,
+      });
+    }
+
+    // If member left during depreciation period (on or after purchase, before depreciation ends)
+    if (leaveDate && leaveDate >= purchaseDate && leaveDate < depreciationEnd) {
+      events.push({
+        date: leaveDate,
+        type: 'LEAVE',
+        memberId: member.id,
+        memberName: member.name,
+      });
+    }
+  });
+
+  // Sort by date, then by type (PURCHASE/JOIN before LEAVE on same day)
+  events.sort((a, b) => {
+    const timeDiff = a.date.getTime() - b.date.getTime();
+    if (timeDiff !== 0) return timeDiff;
+    // On same day: PURCHASE first, then JOIN, then LEAVE
+    const typeOrder = { 'PURCHASE': 0, 'JOIN': 1, 'LEAVE': 2 };
+    return typeOrder[a.type] - typeOrder[b.type];
+  });
+
+  return events;
+}
+
+// Member stake info for tracking
+interface MemberStake {
+  memberId: number;
+  memberName: string;
+  stake: number; // Percentage (0-1) of remaining value
+  totalPaid: number; // Total amount paid (initial + buy-ins)
+  buyInReceived: number; // Amount received from new members
+}
+
+// Calculate stakes and financial transactions for all members on an item
+interface ItemFinancials {
+  memberStakes: Map<number, MemberStake>;
+  memberUsage: Map<number, number>;
+}
+
+function calculateItemFinancials(item: Item, allMembers: Member[]): ItemFinancials {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
   const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
   const depreciationDays = getDepreciationDays(item);
   const perDayValue = item.price / depreciationDays;
-  
-  // Member's effective start date for this item
-  const startDate = memberJoinDate > purchaseDate ? memberJoinDate : purchaseDate;
-  
-  // End date for calculation (either leave date, provided end date, depreciation end, or today)
   const today = normalizeDate(new Date());
-  let calcEndDate = depreciationEnd < today ? depreciationEnd : today;
-  if (member.leave_date) {
-    const leaveDate = normalizeDate(new Date(member.leave_date));
-    if (leaveDate < calcEndDate) calcEndDate = leaveDate;
+
+  const memberStakes = new Map<number, MemberStake>();
+  const memberUsage = new Map<number, number>();
+
+  // Get all stake-affecting events
+  const events = getStakeEvents(item, allMembers);
+
+  // Process initial purchase event - all members who were ACTIVE on purchase date
+  // This includes members who joined on or before the purchase date and hadn't left yet
+  const initialMembers = getActiveMembersOnDay(allMembers, purchaseDate);
+
+  if (initialMembers.length === 0) {
+    // No one was present at purchase - this shouldn't happen but handle gracefully
+    return { memberStakes, memberUsage };
   }
-  if (endDate) {
-    const ed = normalizeDate(endDate);
-    if (ed < calcEndDate) calcEndDate = ed;
-  }
-  
-  // If member's start is after calculation end, no usage
-  if (startDate > calcEndDate) return 0;
-  if (startDate > depreciationEnd) return 0;
-  
-  // Iterate each day and calculate member's share
-  let total = 0;
-  let cursor = new Date(startDate.getTime());
-  const last = calcEndDate < depreciationEnd ? calcEndDate : depreciationEnd;
-  
-  while (cursor.getTime() <= last.getTime()) {
-    const presentMembers = getMembersPresentOnDay(allMembers, cursor);
-    if (presentMembers.length > 0) {
-      total += perDayValue / presentMembers.length;
+
+  // Initial stake distribution - equal shares
+  const initialStake = 1 / initialMembers.length;
+  const initialPayment = item.price / initialMembers.length;
+
+  initialMembers.forEach(m => {
+    memberStakes.set(m.id, {
+      memberId: m.id,
+      memberName: m.name,
+      stake: initialStake,
+      totalPaid: initialPayment,
+      buyInReceived: 0,
+    });
+    memberUsage.set(m.id, 0);
+  });
+
+  // Process JOIN and LEAVE events (skip PURCHASE as already handled)
+  events.filter(e => e.type !== 'PURCHASE').forEach(event => {
+    if (event.type === 'JOIN') {
+      // New member buys in
+      const valueAtJoin = getDepreciatedValueAtDate(item, event.date);
+      if (valueAtJoin <= 0) return; // Item fully depreciated
+
+      // Get active members AFTER this new member joins
+      const activeMembersAfterJoin = getActiveMembersOnDay(allMembers, event.date);
+      if (activeMembersAfterJoin.length === 0) return;
+
+      // Get existing members (those who had stakes before this join)
+      const existingMemberIds = Array.from(memberStakes.keys());
+      const existingMembers = existingMemberIds.filter(id => {
+        const m = allMembers.find(mem => mem.id === id);
+        if (!m) return false;
+        // Check if they're still active (haven't left before this date)
+        return isMemberActiveOnDay(m, event.date) && m.id !== event.memberId;
+      });
+
+      if (existingMembers.length === 0) return;
+
+      // New member's buy-in amount
+      const buyInAmount = valueAtJoin / activeMembersAfterJoin.length;
+
+      // New member gets their stake
+      const newMemberStake = buyInAmount / valueAtJoin;
+
+      // Calculate total existing stake (should be 1.0 if no one left)
+      let totalExistingStake = 0;
+      existingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake) totalExistingStake += stake.stake;
+      });
+
+      // Distribute buy-in to existing members proportionally to their stake
+      // and reduce their stakes proportionally
+      existingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake && totalExistingStake > 0) {
+          const stakeRatio = stake.stake / totalExistingStake;
+          const amountReceived = buyInAmount * stakeRatio;
+
+          // Their stake is reduced proportionally 
+          stake.stake = stake.stake * (1 - newMemberStake / totalExistingStake);
+          stake.buyInReceived += amountReceived;
+        }
+      });
+
+      // Add new member's stake
+      memberStakes.set(event.memberId, {
+        memberId: event.memberId,
+        memberName: event.memberName,
+        stake: newMemberStake,
+        totalPaid: buyInAmount,
+        buyInReceived: 0,
+      });
+      memberUsage.set(event.memberId, 0);
+
+    } else if (event.type === 'LEAVE') {
+      // Member leaves - their stake gets distributed to remaining active members
+      const leavingStake = memberStakes.get(event.memberId);
+      if (!leavingStake || leavingStake.stake <= 0) return;
+
+      // Get remaining active members (excluding the leaving member, checking day AFTER leave)
+      const dayAfterLeave = new Date(event.date.getTime() + ONE_DAY_MS);
+      const remainingMembers = Array.from(memberStakes.keys()).filter(id => {
+        if (id === event.memberId) return false;
+        const m = allMembers.find(mem => mem.id === id);
+        if (!m) return false;
+        return isMemberActiveOnDay(m, dayAfterLeave);
+      });
+
+      if (remainingMembers.length === 0) {
+        // No one left to transfer stake to - stake is forfeited
+        leavingStake.stake = 0;
+        return;
+      }
+
+      // Calculate total remaining stake
+      let totalRemainingStake = 0;
+      remainingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake) totalRemainingStake += stake.stake;
+      });
+
+      // Distribute leaving member's stake proportionally to remaining members
+      remainingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake && totalRemainingStake > 0) {
+          const stakeRatio = stake.stake / totalRemainingStake;
+          stake.stake += leavingStake.stake * stakeRatio;
+        }
+      });
+
+      // Mark leaving member's final stake as 0 (they've been refunded based on value at leave)
+      leavingStake.stake = 0;
+    }
+  });
+
+  // Calculate usage for each member
+  // Iterate through each day from purchase to min(depreciation end, today)
+  const calcEndDate = depreciationEnd < today ? depreciationEnd : today;
+  let cursor = new Date(purchaseDate.getTime());
+
+  while (cursor.getTime() <= calcEndDate.getTime()) {
+    const activeMembers = getActiveMembersOnDay(allMembers, cursor);
+    if (activeMembers.length > 0) {
+      const dailyUsagePerMember = perDayValue / activeMembers.length;
+      activeMembers.forEach(m => {
+        // Initialize usage for this member if not already done (for late joiners)
+        if (!memberUsage.has(m.id)) {
+          memberUsage.set(m.id, 0);
+        }
+        const currentUsage = memberUsage.get(m.id) || 0;
+        memberUsage.set(m.id, currentUsage + dailyUsagePerMember);
+      });
     }
     cursor = new Date(cursor.getTime() + ONE_DAY_MS);
   }
-  
-  return total;
+
+  return { memberStakes, memberUsage };
+}
+
+// Calculate refund for a leaving member for a specific item
+function calculateRefundForItem(member: Member, item: Item, allMembers: Member[]): number {
+  if (!member.leave_date) return 0;
+
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  const leaveDate = normalizeDate(new Date(member.leave_date));
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+
+  // If member left before purchase or joined after depreciation, no involvement
+  if (leaveDate < purchaseDate) return 0;
+  if (memberJoinDate > depreciationEnd) return 0;
+
+  // Get depreciated value at leave date
+  const valueAtLeave = getDepreciatedValueAtDate(item, leaveDate);
+  if (valueAtLeave <= 0) return 0;
+
+  // Calculate member's stake at leave time
+  const financials = calculateItemFinancials(item, allMembers);
+  const stake = financials.memberStakes.get(member.id);
+
+  // We need to calculate what their stake was RIGHT BEFORE they left
+  // Since calculateItemFinancials processes the leave event, we need to look at the value before
+  // Actually, we should calculate their refund as: stake * valueAtLeave
+  // But after the LEAVE event is processed, their stake is 0
+  // So we need a different approach - calculate financials up to the day before leave
+
+  // Recalculate with a view stopping before the leave
+  const { memberStakes } = calculateStakesBeforeLeave(item, allMembers, member.id);
+  const stakeBeforeLeave = memberStakes.get(member.id);
+
+  if (!stakeBeforeLeave) return 0;
+  return stakeBeforeLeave.stake * valueAtLeave;
+}
+
+// Helper function to calculate stakes right before a specific member leaves
+function calculateStakesBeforeLeave(item: Item, allMembers: Member[], leavingMemberId: number): { memberStakes: Map<number, MemberStake> } {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+
+  const memberStakes = new Map<number, MemberStake>();
+
+  // Get all stake-affecting events
+  let events = getStakeEvents(item, allMembers);
+
+  // Remove the LEAVE event for the specific member we're analyzing
+  events = events.filter(e => !(e.type === 'LEAVE' && e.memberId === leavingMemberId));
+
+  // Process initial purchase event - all members who were ACTIVE on purchase date
+  const initialMembers = getActiveMembersOnDay(allMembers, purchaseDate);
+
+  if (initialMembers.length === 0) {
+    return { memberStakes };
+  }
+
+  const initialStake = 1 / initialMembers.length;
+  const initialPayment = item.price / initialMembers.length;
+
+  initialMembers.forEach(m => {
+    memberStakes.set(m.id, {
+      memberId: m.id,
+      memberName: m.name,
+      stake: initialStake,
+      totalPaid: initialPayment,
+      buyInReceived: 0,
+    });
+  });
+
+  // Process JOIN and LEAVE events
+  events.filter(e => e.type !== 'PURCHASE').forEach(event => {
+    if (event.type === 'JOIN') {
+      const valueAtJoin = getDepreciatedValueAtDate(item, event.date);
+      if (valueAtJoin <= 0) return;
+
+      const activeMembersAfterJoin = getActiveMembersOnDay(allMembers, event.date);
+      if (activeMembersAfterJoin.length === 0) return;
+
+      const existingMemberIds = Array.from(memberStakes.keys());
+      const existingMembers = existingMemberIds.filter(id => {
+        const m = allMembers.find(mem => mem.id === id);
+        if (!m) return false;
+        return isMemberActiveOnDay(m, event.date) && m.id !== event.memberId;
+      });
+
+      if (existingMembers.length === 0) return;
+
+      const buyInAmount = valueAtJoin / activeMembersAfterJoin.length;
+      const newMemberStake = buyInAmount / valueAtJoin;
+
+      let totalExistingStake = 0;
+      existingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake) totalExistingStake += stake.stake;
+      });
+
+      existingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake && totalExistingStake > 0) {
+          const stakeRatio = stake.stake / totalExistingStake;
+          const amountReceived = buyInAmount * stakeRatio;
+          stake.stake = stake.stake * (1 - newMemberStake / totalExistingStake);
+          stake.buyInReceived += amountReceived;
+        }
+      });
+
+      memberStakes.set(event.memberId, {
+        memberId: event.memberId,
+        memberName: event.memberName,
+        stake: newMemberStake,
+        totalPaid: buyInAmount,
+        buyInReceived: 0,
+      });
+
+    } else if (event.type === 'LEAVE') {
+      const leavingStake = memberStakes.get(event.memberId);
+      if (!leavingStake || leavingStake.stake <= 0) return;
+
+      const dayAfterLeave = new Date(event.date.getTime() + ONE_DAY_MS);
+      const remainingMembers = Array.from(memberStakes.keys()).filter(id => {
+        if (id === event.memberId) return false;
+        const m = allMembers.find(mem => mem.id === id);
+        if (!m) return false;
+        return isMemberActiveOnDay(m, dayAfterLeave);
+      });
+
+      if (remainingMembers.length === 0) {
+        leavingStake.stake = 0;
+        return;
+      }
+
+      let totalRemainingStake = 0;
+      remainingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake) totalRemainingStake += stake.stake;
+      });
+
+      remainingMembers.forEach(id => {
+        const stake = memberStakes.get(id);
+        if (stake && totalRemainingStake > 0) {
+          const stakeRatio = stake.stake / totalRemainingStake;
+          stake.stake += leavingStake.stake * stakeRatio;
+        }
+      });
+
+      leavingStake.stake = 0;
+    }
+  });
+
+  return { memberStakes };
+}
+
+// Calculate buy-in amount for a member who joined after item purchase
+function calculateBuyInForItem(member: Member, item: Item, allMembers: Member[]): number {
+  const purchaseDate = normalizeDate(new Date(item.purchase_date));
+  const memberJoinDate = normalizeDate(new Date(member.joined_at));
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+
+  // Only applies if member joined after purchase and before depreciation ends
+  if (memberJoinDate <= purchaseDate) return 0;
+  if (memberJoinDate > depreciationEnd) return 0;
+
+  // Get depreciated value at the time member joined
+  const valueAtJoin = getDepreciatedValueAtDate(item, memberJoinDate);
+  if (valueAtJoin <= 0) return 0;
+
+  // Count ACTIVE members at the moment the new member joins (including the new member)
+  const activeMembersAtJoin = getActiveMembersOnDay(allMembers, memberJoinDate);
+  if (activeMembersAtJoin.length === 0) return 0;
+
+  // New member's share of the remaining value
+  return valueAtJoin / activeMembersAtJoin.length;
+}
+
+// Calculate daily usage cost for a member for an item
+function calculateUsageForItem(member: Member, item: Item, allMembers: Member[]): number {
+  const financials = calculateItemFinancials(item, allMembers);
+  return financials.memberUsage.get(member.id) || 0;
 }
 
 // Calculate what a member originally paid for an item (or bought in for)
 function calculateInitialPaymentForItem(member: Member, item: Item, allMembers: Member[]): number {
   const purchaseDate = normalizeDate(new Date(item.purchase_date));
   const memberJoinDate = normalizeDate(new Date(member.joined_at));
-  
-  if (memberJoinDate <= purchaseDate) {
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+
+  // If member joined after depreciation ended, they have no involvement
+  if (memberJoinDate > depreciationEnd) return 0;
+
+  if (memberJoinDate.getTime() === purchaseDate.getTime()) {
     // Original purchaser: paid equal share at purchase time
     const membersAtPurchase = allMembers.filter(m => {
       const joinDate = normalizeDate(new Date(m.joined_at));
-      return joinDate <= purchaseDate;
+      return joinDate.getTime() === purchaseDate.getTime();
     });
     return item.price / membersAtPurchase.length;
-  } else {
+  } else if (memberJoinDate > purchaseDate) {
     // Late joiner: pays buy-in amount
     return calculateBuyInForItem(member, item, allMembers);
   }
+
+  // Member joined before purchase - they're not involved unless they were active on purchase date
+  if (isMemberActiveOnDay(member, purchaseDate)) {
+    const membersAtPurchase = getActiveMembersOnDay(allMembers, purchaseDate);
+    return item.price / membersAtPurchase.length;
+  }
+
+  return 0;
 }
 
 // Calculate what each member owes to or receives from others for an item
@@ -215,75 +579,79 @@ interface MemberBalance {
   usage: number;           // Their actual usage cost
   buyInPaid: number;       // Amount paid to buy into past items
   buyInReceived: number;   // Amount received from new members
-  netBalance: number;      // Positive = owed money, Negative = owes money
+  refundAmount: number;    // Amount refunded when leaving (based on stake)
+  netBalance: number;      // Positive = owed money (refundable), Negative = owes money
 }
 
 function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: Member[]): MemberBalance {
   const purchaseDate = normalizeDate(new Date(item.purchase_date));
   const memberJoinDate = normalizeDate(new Date(member.joined_at));
-  const isOriginalPurchaser = memberJoinDate <= purchaseDate;
-  
-  const initialPayment = calculateInitialPaymentForItem(member, item, allMembers);
-  const usage = calculateUsageForItem(member, item, allMembers);
-  const buyInPaid = isOriginalPurchaser ? 0 : calculateBuyInForItem(member, item, allMembers);
-  
-  // Calculate buy-in received from members who joined after this member
-  // Buy-in is distributed PROPORTIONALLY based on each existing member's stake in the remaining value
-  let buyInReceived = 0;
-  const depreciationEnd = getDepreciationEndDate(item);
-  
-  allMembers.forEach(laterMember => {
-    if (laterMember.id === member.id) return;
-    const laterJoinDate = normalizeDate(new Date(laterMember.joined_at));
-    
-    // Only process members who joined after purchase and within depreciation period
-    if (laterJoinDate > purchaseDate && laterJoinDate <= depreciationEnd) {
-      // Was current member present when later member joined?
-      if (isMemberPresentOnDay(member, laterJoinDate)) {
-        const valueAtLaterJoin = getDepreciatedValueAtDate(item, laterJoinDate);
-        const allMembersAtThatTime = getMembersPresentOnDay(allMembers, laterJoinDate);
-        
-        // Get existing members (those who were there BEFORE the new member joined)
-        const existingMembersAtThatTime = allMembersAtThatTime.filter(m => {
-          const mJoin = normalizeDate(new Date(m.joined_at));
-          return mJoin < laterJoinDate;
-        });
-        
-        if (existingMembersAtThatTime.length > 0) {
-          // New member pays their share of remaining value
-          const newMemberBuyIn = valueAtLaterJoin / allMembersAtThatTime.length;
-          
-          // Check if current member is one of the existing members
-          const isExistingMember = existingMembersAtThatTime.some(em => em.id === member.id);
-          
-          if (isExistingMember) {
-            // Distribute buy-in equally among existing members
-            // This ensures total buy-in received = total buy-in paid
-            buyInReceived += newMemberBuyIn / existingMembersAtThatTime.length;
-          }
-        }
-      }
-    }
-  });
-  
-  // Net balance calculation:
-  // 
-  // For ORIGINAL purchasers:
-  //   - They paid initialPayment (their share of item price at purchase)
-  //   - They received buyInReceived from later joiners (reduces their effective cost)
-  //   - Their effective investment = initialPayment - buyInReceived
-  //   - Their usage is what they consumed
-  //   - Net balance = (initialPayment - buyInReceived) - usage
-  //
-  // For LATE joiners:
-  //   - They paid buyIn (= initialPayment for them) to existing members
-  //   - They received nothing (buyInReceived = 0 typically, unless someone joined after them)
-  //   - Net balance = initialPayment - buyInReceived - usage
-  //
-  // This ensures zero-sum: money paid by late joiners goes to original members,
-  // reducing original members' effective cost.
+  const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
+
+  // Check if member has any involvement with this item
+  const memberLeaveDate = member.leave_date ? normalizeDate(new Date(member.leave_date)) : null;
+  if (memberLeaveDate && memberLeaveDate < purchaseDate) {
+    // Member left before purchase
+    return {
+      memberId: member.id,
+      memberName: member.name,
+      initialPayment: 0,
+      usage: 0,
+      buyInPaid: 0,
+      buyInReceived: 0,
+      refundAmount: 0,
+      netBalance: 0,
+    };
+  }
+  if (memberJoinDate > depreciationEnd) {
+    // Member joined after depreciation ended
+    return {
+      memberId: member.id,
+      memberName: member.name,
+      initialPayment: 0,
+      usage: 0,
+      buyInPaid: 0,
+      buyInReceived: 0,
+      refundAmount: 0,
+      netBalance: 0,
+    };
+  }
+
+  const isOriginalPurchaser = memberJoinDate.getTime() === purchaseDate.getTime() ||
+    (memberJoinDate < purchaseDate && isMemberActiveOnDay(member, purchaseDate));
+
+  const financials = calculateItemFinancials(item, allMembers);
+  const stakeInfo = financials.memberStakes.get(member.id);
+
+  const initialPayment = stakeInfo?.totalPaid || calculateInitialPaymentForItem(member, item, allMembers);
+  const usage = financials.memberUsage.get(member.id) || 0;
+  const buyInPaid = isOriginalPurchaser ? 0 : (stakeInfo?.totalPaid || 0);
+  const buyInReceived = stakeInfo?.buyInReceived || 0;
+
+  // Calculate refund if member has left
+  let refundAmount = 0;
+  if (member.leave_date) {
+    refundAmount = calculateRefundForItem(member, item, allMembers);
+  }
+
+  // Net balance = what they paid - what they received from buy-ins - what they used + refund (if left)
+  // For active members: netBalance = initialPayment - buyInReceived - usage (refund = 0)
+  // For left members: netBalance = initialPayment - buyInReceived - usage + refundAmount
+  // But actually, refund IS the remaining value after usage, so:
+  // netBalance (for left) should equal refundAmount - (usage that happened after accounting)
+
+  // Simplified: For left members, their "balance" is what they get refunded
+  // Their contribution was: initialPayment - buyInReceived
+  // Their usage was: usage
+  // What's left of their stake value: refundAmount
+  // So netBalance = (initialPayment - buyInReceived) - usage should approximately equal the refund calculation
+  // But with the stake model, refund = stake * remaining value, which accounts for all transfers
+
+  // For display purposes, let's use:
+  // netBalance = initialPayment - buyInReceived - usage (classic calculation)
+  // refundAmount shows the stake-based refund (more accurate for leaving members)
   const netBalance = initialPayment - buyInReceived - usage;
-  
+
   return {
     memberId: member.id,
     memberName: member.name,
@@ -291,7 +659,8 @@ function calculateMemberBalanceForItem(member: Member, item: Item, allMembers: M
     usage,
     buyInPaid,
     buyInReceived,
-    netBalance,
+    refundAmount,
+    netBalance: member.leave_date ? refundAmount : netBalance,
   };
 }
 
@@ -311,23 +680,31 @@ function calculateItemBreakdown(member: Member, item: Item, allMembers: Member[]
   const memberJoinDate = normalizeDate(new Date(member.joined_at));
   const memberLeaveDate = member.leave_date ? normalizeDate(new Date(member.leave_date)) : null;
   const depreciationEnd = normalizeDate(getDepreciationEndDate(item));
-  
-  // If member left before or on purchase date, they have no involvement
-  if (memberLeaveDate && memberLeaveDate <= purchaseDate) return null;
-  
+
+  // If member left before purchase date, they have no involvement
+  if (memberLeaveDate && memberLeaveDate < purchaseDate) return null;
+
   // If member joined after depreciation ended, they have no involvement
   if (memberJoinDate > depreciationEnd) return null;
-  
-  const isLateJoiner = memberJoinDate > purchaseDate;
+
+  // Check if member was active on purchase date or joined later
+  const wasActiveAtPurchase = memberJoinDate.getTime() === purchaseDate.getTime() ||
+    (memberJoinDate < purchaseDate && isMemberActiveOnDay(member, purchaseDate));
+  const isLateJoiner = memberJoinDate > purchaseDate && !wasActiveAtPurchase;
+
   const balance = calculateMemberBalanceForItem(member, item, allMembers);
-  
+
+  // For members who have left, use the stake-based refund
+  // For active members, use the net balance (paid - received - usage)
+  const refundable = balance.netBalance;
+
   return {
     item,
     initialPayment: balance.initialPayment,
     usage: balance.usage,
     buyInPaid: balance.buyInPaid,
     buyInReceived: balance.buyInReceived,
-    refundable: balance.netBalance,
+    refundable,
     isLateJoiner,
   };
 }
@@ -349,7 +726,7 @@ function calculateMemberTotals(member: Member, items: Item[], allMembers: Member
     totalBuyInReceived: 0,
     totalRefundable: 0,
   };
-  
+
   items.forEach(item => {
     const breakdown = calculateItemBreakdown(member, item, allMembers);
     if (breakdown) {
@@ -360,7 +737,7 @@ function calculateMemberTotals(member: Member, items: Item[], allMembers: Member
       totals.totalRefundable += breakdown.refundable;
     }
   });
-  
+
   return totals;
 }
 
@@ -1586,7 +1963,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
     let totalBuyInPaid = 0;
     let totalBuyInReceived = 0;
     let totalNetBalance = 0;
-    
+
     members.forEach(member => {
       const totals = calculateMemberTotals(member, items, members);
       totalPaid += totals.totalInitialPayment;
@@ -1595,11 +1972,11 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       totalBuyInReceived += totals.totalBuyInReceived;
       totalNetBalance += totals.totalRefundable;
     });
-    
+
     const expectedNetBalance = totalItemValue - totalUsage;
     const buyInDiff = totalBuyInPaid - totalBuyInReceived;
     const netBalanceDiff = totalNetBalance - expectedNetBalance;
-    
+
     return {
       totalPaid,
       totalUsage,
@@ -1612,7 +1989,7 @@ export function GroupHomePage({ groupId }: GroupHomePageProps) {
       isBalanced: Math.abs(buyInDiff) < 0.01 && Math.abs(netBalanceDiff) < 0.01
     };
   })();
-  
+
   // Log verification for debugging
   console.log('=== VERIFICATION ===');
   console.log('Total Asset Value:', totalItemValue);
