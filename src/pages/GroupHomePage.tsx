@@ -1310,6 +1310,33 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
                     }
                   };
 
+                  const handleDeleteMember = async () => {
+                    if (member.role === 'owner') {
+                      toast.error('Cannot delete the group owner');
+                      return;
+                    }
+
+                    const confirmed = window.confirm(`Are you sure you want to remove ${member.name} from this group? This action cannot be undone.`);
+                    if (!confirmed) return;
+
+                    try {
+                      const response = await fetch(`/api/groups/${groupId}/members`, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ memberId: member.id }),
+                      });
+                      const data = await response.json();
+                      if (response.ok) {
+                        toast.success('Member removed successfully');
+                        onRefresh();
+                      } else {
+                        toast.error(data.error || 'Failed to remove member');
+                      }
+                    } catch (error) {
+                      toast.error('Failed to remove member');
+                    }
+                  };
+
                   return (
                     <Card key={member.id}>
                       <CardContent className="pt-4">
@@ -1399,6 +1426,16 @@ function GroupSettings({ groupId, groupData, members, items, allMembers, onRefre
                                   </Button>
                                 )}
                               </div>
+                              {member.role !== 'owner' && (
+                                <Button
+                                  variant="destructive"
+                                  className="w-full"
+                                  onClick={handleDeleteMember}
+                                >
+                                  <Trash2 className="mr-2 h-4 w-4" />
+                                  Remove Member
+                                </Button>
+                              )}
                             </div>
                           )}
 

@@ -10,15 +10,15 @@ function getAppUrl(request: NextRequest): string {
   if (process.env.APP_URL) {
     return process.env.APP_URL;
   }
-  
+
   // Check for forwarded headers (set by nginx/reverse proxy)
   const forwardedHost = request.headers.get('x-forwarded-host');
   const forwardedProto = request.headers.get('x-forwarded-proto') || 'https';
-  
+
   if (forwardedHost) {
     return `${forwardedProto}://${forwardedHost}`;
   }
-  
+
   // Fallback to request URL origin
   return new URL(request.url).origin;
 }
@@ -142,7 +142,7 @@ export async function POST(
 
       // Check if there's an active signup token
       let token = dbHelpers.getActiveTokenForUser(userId, 'signup');
-      
+
       if (!token) {
         // Create new token
         const newToken = crypto.randomBytes(24).toString('hex');
@@ -153,7 +153,7 @@ export async function POST(
 
       const appUrl = getAppUrl(request);
       const link = `${appUrl}/auth/accept-invite?token=${token.token}`;
-      
+
       return NextResponse.json({ success: true, link, userId, email: member.email });
     }
 
@@ -183,7 +183,7 @@ export async function PATCH(
     }
 
     const body = await request.json();
-  const { leaveDate, memberId, joinedAt, name, email } = updateMemberSchema.parse(body);
+    const { leaveDate, memberId, joinedAt, name, email } = updateMemberSchema.parse(body);
 
     // Determine which group_member to update. By default a user can update their own leave date.
     let targetGroupMemberId = membership.id;
@@ -210,17 +210,17 @@ export async function PATCH(
     // Update member leave date and/or joined_at
     const resultLeave = leaveDate !== undefined ? dbHelpers.updateMemberLeaveDate(targetGroupMemberId, leaveDate) : null;
     const resultJoined = joinedAt !== undefined ? dbHelpers.updateMemberJoinedAt(targetGroupMemberId, joinedAt) : null;
-    
+
     // Update user name and/or email (owner only)
     let resultName = null;
     let resultEmail = null;
-    
+
     if (name !== undefined || email !== undefined) {
       const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
       if (role !== 'owner') {
         return NextResponse.json({ error: 'Only group owner can update member info' }, { status: 403 });
       }
-      
+
       // Check if email is already taken by another user
       if (email !== undefined) {
         const existingUser = dbHelpers.getUserByEmail(email);
@@ -229,7 +229,7 @@ export async function PATCH(
         }
         resultEmail = dbHelpers.updateUserEmail(targetUserId, email);
       }
-      
+
       if (name !== undefined) {
         resultName = dbHelpers.updateUserName(targetUserId, name);
       }
@@ -254,6 +254,71 @@ export async function PATCH(
     }
 
     console.error('Update member error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// Owner-only: delete a member from the group
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ groupId: string }> }
+) {
+  try {
+    const session = await requireAuth();
+    const { groupId: groupIdStr } = await params;
+    const groupId = parseInt(groupIdStr);
+
+    // Only owners can delete members
+    const role = dbHelpers.getUserRoleInGroup(session.userId as number, groupId);
+    if (role !== 'owner') {
+      return NextResponse.json(
+        { error: 'Only group owner can remove members' },
+        { status: 403 }
+      );
+    }
+
+    const body = await request.json();
+    const { memberId } = body as { memberId: number };
+
+    if (!memberId) {
+      return NextResponse.json(
+        { error: 'memberId is required' },
+        { status: 400 }
+      );
+    }
+
+    // Verify the member exists in this group
+    const members = dbHelpers.getGroupMembers(groupId);
+    const member = members.find((m: any) => m.id === memberId);
+
+    if (!member) {
+      return NextResponse.json(
+        { error: 'Member not found in this group' },
+        { status: 404 }
+      );
+    }
+
+    // Prevent owner from deleting themselves
+    if (member.role === 'owner') {
+      return NextResponse.json(
+        { error: 'Cannot delete the group owner' },
+        { status: 400 }
+      );
+    }
+
+    // Delete the member
+    dbHelpers.removeGroupMember(memberId);
+
+    return NextResponse.json({
+      success: true,
+      message: 'Member removed from group',
+      memberId,
+    });
+  } catch (error) {
+    console.error('Delete member error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

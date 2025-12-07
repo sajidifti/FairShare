@@ -329,6 +329,17 @@ export const dbHelpers = {
     const stmt = db.prepare('SELECT role FROM group_members WHERE user_id = ? AND group_id = ?');
     const result = stmt.get(userId, groupId) as any;
     return result?.role || null;
+  },
+
+  // Remove a member from a group (deletes group_member record and related data)
+  removeGroupMember: (groupMemberId: number) => {
+    // First delete the leave date record if it exists (due to foreign key)
+    const stmtLeave = db.prepare('DELETE FROM member_leave_dates WHERE group_member_id = ?');
+    stmtLeave.run(groupMemberId);
+
+    // Then delete the group member record
+    const stmt = db.prepare('DELETE FROM group_members WHERE id = ?');
+    return stmt.run(groupMemberId);
   }
 };
 
